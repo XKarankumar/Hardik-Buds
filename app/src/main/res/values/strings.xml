@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">Hardik Buds Pro</string>
+    <string name="app_edition">ULTRA PREMIUM</string>
+    <string name="developer_credit">Karan Kumar</string>
+    <string name="copyright_notice">© 2026 Hardik Kumar. All Rights Reserved.</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_sound">Sound</string>
+    <string name="nav_devices">Devices</string>
+    <string name="nav_customize">Customize</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="cd_earbuds_hero">3D Titanium Wireless Earbuds Showcase</string>
+    <string name="cd_subwoofer_art">Subwoofer Engine X Acoustic Wave</string>
+    <string name="cd_connect_device">Connect Bluetooth Device</string>
+    <string name="cd_disconnect_device">Disconnect Bluetooth Device</string>
+    <string name="cd_lock_app">Unlock Hardik Buds Pro</string>
+
+    <string name="monitor_channel_name">Earbuds Connection Monitor</string>
+    <string name="monitor_channel_desc">Displays active Bluetooth earbuds status and battery alerts</string>
+    <string name="alerts_channel_name">Battery &amp; Security Alerts</string>
+    <string name="alerts_channel_desc">Notifies when earbuds connect, reach low battery, or an unrecognized device connects</string>
+</resources>

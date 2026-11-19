@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="titanium_black">#FF0B0D11</color>
+    <color name="titanium_surface">#FF141820</color>
+    <color name="silver_chrome">#FFD8DFE9</color>
+    <color name="silver_muted">#FF94A0B2</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

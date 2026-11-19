@@ -1,0 +1,6 @@
+{
+  "name": "Hardik Buds Pro",
+  "description": "Ultra-premium native Android Bluetooth earbuds companion app with Black Titanium & Silver luxury UI, real Bluetooth/BLE device management, Subwoofer Engine X, 10-band Pro Equalizer, compatibility detection, 10 luxury themes, owner security, and firmware/app update center.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
