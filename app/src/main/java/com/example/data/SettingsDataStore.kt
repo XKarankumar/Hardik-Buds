@@ -7,10 +7,12 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.AncMode
 import com.example.model.AnimationSpeedOption
+import com.example.model.AppLanguageOption
 import com.example.model.AppThemeId
 import com.example.model.BatteryRingStyle
 import com.example.model.ButtonStyleOption
@@ -18,12 +20,18 @@ import com.example.model.CardAppearance
 import com.example.model.ConnectionAnimStyle
 import com.example.model.CustomizationSettings
 import com.example.model.DarkModePreference
+import com.example.model.DotMatrixStyle
 import com.example.model.FontScaleOption
+import com.example.model.HomeTheatreSettings
 import com.example.model.IconStyleOption
 import com.example.model.OwnerSecuritySettings
 import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
+import com.example.model.UiModeOption
+import com.example.ota.OtaChannel
+import com.example.ota.OtaCheckFrequencyHours
+import com.example.ota.OtaSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -35,6 +43,8 @@ class SettingsRepository(private val context: Context) {
         // Customization & Theme
         val THEME_ID = stringPreferencesKey("theme_id")
         val DARK_MODE = stringPreferencesKey("dark_mode")
+        val DOT_MATRIX_STYLE = stringPreferencesKey("dot_matrix_style")
+        val UI_MODE = stringPreferencesKey("ui_mode")
         val CUSTOM_ACCENT_ENABLED = booleanPreferencesKey("custom_accent_enabled")
         val CUSTOM_ACCENT_R = intPreferencesKey("custom_accent_r")
         val CUSTOM_ACCENT_G = intPreferencesKey("custom_accent_g")
@@ -47,13 +57,16 @@ class SettingsRepository(private val context: Context) {
         val ANIM_SPEED = stringPreferencesKey("anim_speed")
         val BATTERY_RING_STYLE = stringPreferencesKey("battery_ring_style")
         val CONNECTION_ANIM_STYLE = stringPreferencesKey("connection_anim_style")
+        val HAPTIC_ENABLED = booleanPreferencesKey("haptic_enabled")
         val CUSTOM_WALLPAPER_URI = stringPreferencesKey("custom_wallpaper_uri")
         val SHOW_QUICK_ANC = booleanPreferencesKey("show_quick_anc")
         val SHOW_SUBWOOFER = booleanPreferencesKey("show_subwoofer")
+        val SHOW_GAMING = booleanPreferencesKey("show_gaming")
         val SHOW_COMPATIBILITY = booleanPreferencesKey("show_compatibility")
         val SHOW_FIRMWARE = booleanPreferencesKey("show_firmware")
         val SHOW_MINI_VIZ = booleanPreferencesKey("show_mini_viz")
         val SHOW_NAV_LABELS = booleanPreferencesKey("show_nav_labels")
+        val APP_LANGUAGE = stringPreferencesKey("app_language")
 
         // Audio / Subwoofer / Modes
         val SUB_ENABLED = booleanPreferencesKey("sub_enabled")
@@ -79,6 +92,7 @@ class SettingsRepository(private val context: Context) {
         val AUTO_RECONNECT = booleanPreferencesKey("auto_reconnect")
         val AUTO_CONNECT_LAST = booleanPreferencesKey("auto_connect_last")
         val CONN_NOTIFICATIONS = booleanPreferencesKey("conn_notifications")
+        val DISCONNECT_NOTIFICATIONS = booleanPreferencesKey("disconnect_notifications")
         val BATTERY_ALERT_THRESHOLD = intPreferencesKey("battery_alert_threshold")
         val HEARING_PROTECTION = booleanPreferencesKey("hearing_protection")
         val HEARING_WARNING_PCT = intPreferencesKey("hearing_warning_pct")
@@ -101,31 +115,56 @@ class SettingsRepository(private val context: Context) {
         val LOCK_ON_LAUNCH = booleanPreferencesKey("lock_on_launch")
         val LOCK_SENSITIVE = booleanPreferencesKey("lock_sensitive")
         val ALERT_UNAUTHORIZED = booleanPreferencesKey("alert_unauthorized")
+
+        // Home Theatre Smooth Connection
+        val HT_SMOOTH_FADE = booleanPreferencesKey("ht_smooth_fade")
+        val HT_AUTO_CINEMA = booleanPreferencesKey("ht_auto_cinema")
+        val HT_LFE_HZ = intPreferencesKey("ht_lfe_hz")
+        val HT_TRANSITION_MS = intPreferencesKey("ht_transition_ms")
+        val HT_PREFERRED_ADDR = stringPreferencesKey("ht_preferred_addr")
+        val HT_PREFERRED_NAME = stringPreferencesKey("ht_preferred_name")
+
+        // OTA Auto Update System
+        val OTA_GITHUB_OWNER = stringPreferencesKey("ota_github_owner")
+        val OTA_GITHUB_REPO = stringPreferencesKey("ota_github_repo")
+        val OTA_AUTO_LAUNCH = booleanPreferencesKey("ota_auto_launch")
+        val OTA_BG_CHECK = booleanPreferencesKey("ota_bg_check")
+        val OTA_FREQ = stringPreferencesKey("ota_freq")
+        val OTA_CHANNEL = stringPreferencesKey("ota_channel")
+        val OTA_NOTIFICATIONS = booleanPreferencesKey("ota_notifications")
+        val OTA_LAST_CHECKED = longPreferencesKey("ota_last_checked")
+        val OTA_LAST_VERSION = stringPreferencesKey("ota_last_version")
+        val OTA_SHA256_OVERRIDE = stringPreferencesKey("ota_sha256_override")
     }
 
     val customizationFlow: Flow<CustomizationSettings> = context.budsDataStore.data.map { p ->
         CustomizationSettings(
-            themeId = enumOrDefault(p[Keys.THEME_ID], AppThemeId.BLACK_TITANIUM),
+            themeId = enumOrDefault(p[Keys.THEME_ID], AppThemeId.NOTHING_MONOCHROME),
             darkMode = enumOrDefault(p[Keys.DARK_MODE], DarkModePreference.DARK),
+            dotMatrixStyle = enumOrDefault(p[Keys.DOT_MATRIX_STYLE], DotMatrixStyle.DOTO),
+            uiMode = enumOrDefault(p[Keys.UI_MODE], UiModeOption.STUDIO),
             customAccentEnabled = p[Keys.CUSTOM_ACCENT_ENABLED] ?: false,
-            customAccentRed = p[Keys.CUSTOM_ACCENT_R] ?: 216,
-            customAccentGreen = p[Keys.CUSTOM_ACCENT_G] ?: 223,
-            customAccentBlue = p[Keys.CUSTOM_ACCENT_B] ?: 233,
+            customAccentRed = p[Keys.CUSTOM_ACCENT_R] ?: 255,
+            customAccentGreen = p[Keys.CUSTOM_ACCENT_G] ?: 48,
+            customAccentBlue = p[Keys.CUSTOM_ACCENT_B] ?: 56,
             rgbCycleEnabled = p[Keys.RGB_CYCLE] ?: false,
             cardAppearance = enumOrDefault(p[Keys.CARD_APPEARANCE], CardAppearance.GLASS),
             buttonStyle = enumOrDefault(p[Keys.BUTTON_STYLE], ButtonStyleOption.PILL),
             fontScale = enumOrDefault(p[Keys.FONT_SCALE], FontScaleOption.STANDARD),
-            iconStyle = enumOrDefault(p[Keys.ICON_STYLE], IconStyleOption.FILLED),
+            iconStyle = enumOrDefault(p[Keys.ICON_STYLE], IconStyleOption.OUTLINED),
             animationSpeed = enumOrDefault(p[Keys.ANIM_SPEED], AnimationSpeedOption.SMOOTH_1X),
             batteryRingStyle = enumOrDefault(p[Keys.BATTERY_RING_STYLE], BatteryRingStyle.ORBITAL),
             connectionAnimStyle = enumOrDefault(p[Keys.CONNECTION_ANIM_STYLE], ConnectionAnimStyle.SONIC_PULSE),
+            hapticEnabled = p[Keys.HAPTIC_ENABLED] ?: true,
             customWallpaperUri = p[Keys.CUSTOM_WALLPAPER_URI],
             showQuickAncCard = p[Keys.SHOW_QUICK_ANC] ?: true,
             showSubwooferCard = p[Keys.SHOW_SUBWOOFER] ?: true,
+            showGamingCard = p[Keys.SHOW_GAMING] ?: true,
             showCompatibilityCard = p[Keys.SHOW_COMPATIBILITY] ?: true,
             showFirmwareCard = p[Keys.SHOW_FIRMWARE] ?: true,
             showMiniVisualizerWidget = p[Keys.SHOW_MINI_VIZ] ?: true,
             showBottomNavLabels = p[Keys.SHOW_NAV_LABELS] ?: true,
+            language = enumOrDefault(p[Keys.APP_LANGUAGE], AppLanguageOption.ENGLISH),
         )
     }
 
@@ -166,6 +205,7 @@ class SettingsRepository(private val context: Context) {
             autoReconnect = p[Keys.AUTO_RECONNECT] ?: true,
             autoConnectLastDevice = p[Keys.AUTO_CONNECT_LAST] ?: false,
             connectionNotifications = p[Keys.CONN_NOTIFICATIONS] ?: true,
+            disconnectAlertNotifications = p[Keys.DISCONNECT_NOTIFICATIONS] ?: true,
             batteryAlertThreshold = p[Keys.BATTERY_ALERT_THRESHOLD] ?: 20,
             hearingProtectionEnabled = p[Keys.HEARING_PROTECTION] ?: true,
             hearingWarningPercent = p[Keys.HEARING_WARNING_PCT] ?: 80,
@@ -197,10 +237,38 @@ class SettingsRepository(private val context: Context) {
         p[Keys.LAST_DEVICE_ADDRESS]
     }
 
+    val homeTheatreSettingsFlow: Flow<HomeTheatreSettings> = context.budsDataStore.data.map { p ->
+        HomeTheatreSettings(
+            smoothFadeHandoff = p[Keys.HT_SMOOTH_FADE] ?: true,
+            autoCinemaSubwoofer = p[Keys.HT_AUTO_CINEMA] ?: true,
+            lfeCrossoverHz = p[Keys.HT_LFE_HZ] ?: 80,
+            smoothTransitionMs = p[Keys.HT_TRANSITION_MS] ?: 1200,
+            preferredTheatreAddress = p[Keys.HT_PREFERRED_ADDR],
+            preferredTheatreName = p[Keys.HT_PREFERRED_NAME],
+        )
+    }
+
+    val otaSettingsFlow: Flow<OtaSettings> = context.budsDataStore.data.map { p ->
+        OtaSettings(
+            githubOwner = p[Keys.OTA_GITHUB_OWNER] ?: "XKarankumar",
+            githubRepo = p[Keys.OTA_GITHUB_REPO] ?: "Hardik-Buds",
+            autoCheckOnLaunch = p[Keys.OTA_AUTO_LAUNCH] ?: true,
+            backgroundCheckEnabled = p[Keys.OTA_BG_CHECK] ?: true,
+            checkFrequency = enumOrDefault(p[Keys.OTA_FREQ], OtaCheckFrequencyHours.HOURS_24),
+            channel = enumOrDefault(p[Keys.OTA_CHANNEL], OtaChannel.STABLE),
+            notificationsEnabled = p[Keys.OTA_NOTIFICATIONS] ?: true,
+            lastCheckedTimestamp = p[Keys.OTA_LAST_CHECKED],
+            lastKnownLatestVersion = p[Keys.OTA_LAST_VERSION],
+            expectedSha256Override = p[Keys.OTA_SHA256_OVERRIDE] ?: "",
+        )
+    }
+
     suspend fun updateCustomization(c: CustomizationSettings) {
         context.budsDataStore.edit { p ->
             p[Keys.THEME_ID] = c.themeId.name
             p[Keys.DARK_MODE] = c.darkMode.name
+            p[Keys.DOT_MATRIX_STYLE] = c.dotMatrixStyle.name
+            p[Keys.UI_MODE] = c.uiMode.name
             p[Keys.CUSTOM_ACCENT_ENABLED] = c.customAccentEnabled
             p[Keys.CUSTOM_ACCENT_R] = c.customAccentRed
             p[Keys.CUSTOM_ACCENT_G] = c.customAccentGreen
@@ -213,6 +281,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.ANIM_SPEED] = c.animationSpeed.name
             p[Keys.BATTERY_RING_STYLE] = c.batteryRingStyle.name
             p[Keys.CONNECTION_ANIM_STYLE] = c.connectionAnimStyle.name
+            p[Keys.HAPTIC_ENABLED] = c.hapticEnabled
             if (c.customWallpaperUri != null) {
                 p[Keys.CUSTOM_WALLPAPER_URI] = c.customWallpaperUri
             } else {
@@ -220,10 +289,12 @@ class SettingsRepository(private val context: Context) {
             }
             p[Keys.SHOW_QUICK_ANC] = c.showQuickAncCard
             p[Keys.SHOW_SUBWOOFER] = c.showSubwooferCard
+            p[Keys.SHOW_GAMING] = c.showGamingCard
             p[Keys.SHOW_COMPATIBILITY] = c.showCompatibilityCard
             p[Keys.SHOW_FIRMWARE] = c.showFirmwareCard
             p[Keys.SHOW_MINI_VIZ] = c.showMiniVisualizerWidget
             p[Keys.SHOW_NAV_LABELS] = c.showBottomNavLabels
+            p[Keys.APP_LANGUAGE] = c.language.name
         }
     }
 
@@ -264,6 +335,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.AUTO_RECONNECT] = s.autoReconnect
             p[Keys.AUTO_CONNECT_LAST] = s.autoConnectLastDevice
             p[Keys.CONN_NOTIFICATIONS] = s.connectionNotifications
+            p[Keys.DISCONNECT_NOTIFICATIONS] = s.disconnectAlertNotifications
             p[Keys.BATTERY_ALERT_THRESHOLD] = s.batteryAlertThreshold
             p[Keys.HEARING_PROTECTION] = s.hearingProtectionEnabled
             p[Keys.HEARING_WARNING_PCT] = s.hearingWarningPercent
@@ -300,6 +372,46 @@ class SettingsRepository(private val context: Context) {
             p[Keys.LOCK_ON_LAUNCH] = o.lockAppOnLaunch
             p[Keys.LOCK_SENSITIVE] = o.lockSensitiveSettings
             p[Keys.ALERT_UNAUTHORIZED] = o.alertOnUnauthorizedDevice
+        }
+    }
+
+    suspend fun updateHomeTheatreSettings(h: HomeTheatreSettings) {
+        context.budsDataStore.edit { p ->
+            p[Keys.HT_SMOOTH_FADE] = h.smoothFadeHandoff
+            p[Keys.HT_AUTO_CINEMA] = h.autoCinemaSubwoofer
+            p[Keys.HT_LFE_HZ] = h.lfeCrossoverHz
+            p[Keys.HT_TRANSITION_MS] = h.smoothTransitionMs
+            if (h.preferredTheatreAddress != null) {
+                p[Keys.HT_PREFERRED_ADDR] = h.preferredTheatreAddress
+            } else {
+                p.remove(Keys.HT_PREFERRED_ADDR)
+            }
+            if (h.preferredTheatreName != null) {
+                p[Keys.HT_PREFERRED_NAME] = h.preferredTheatreName
+            } else {
+                p.remove(Keys.HT_PREFERRED_NAME)
+            }
+        }
+    }
+
+    suspend fun updateOtaSettings(o: OtaSettings) {
+        context.budsDataStore.edit { p ->
+            p[Keys.OTA_GITHUB_OWNER] = o.githubOwner.trim().ifBlank { "XKarankumar" }
+            p[Keys.OTA_GITHUB_REPO] = o.githubRepo.trim().ifBlank { "Hardik-Buds" }
+            p[Keys.OTA_AUTO_LAUNCH] = o.autoCheckOnLaunch
+            p[Keys.OTA_BG_CHECK] = o.backgroundCheckEnabled
+            p[Keys.OTA_FREQ] = o.checkFrequency.name
+            p[Keys.OTA_CHANNEL] = o.channel.name
+            p[Keys.OTA_NOTIFICATIONS] = o.notificationsEnabled
+            if (o.lastCheckedTimestamp != null) {
+                p[Keys.OTA_LAST_CHECKED] = o.lastCheckedTimestamp
+            }
+            if (o.lastKnownLatestVersion != null) {
+                p[Keys.OTA_LAST_VERSION] = o.lastKnownLatestVersion
+            } else {
+                p.remove(Keys.OTA_LAST_VERSION)
+            }
+            p[Keys.OTA_SHA256_OVERRIDE] = o.expectedSha256Override.trim().lowercase()
         }
     }
 

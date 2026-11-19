@@ -7,6 +7,18 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.model.DotMatrixStyle
+
+val DotoMatrixFamily = FontFamily(
+    Font(R.font.doto, FontWeight.Normal),
+    Font(R.font.doto, FontWeight.Medium),
+    Font(R.font.doto, FontWeight.SemiBold),
+    Font(R.font.doto, FontWeight.Bold),
+)
+
+val DotGothicFamily = FontFamily(
+    Font(R.font.dotgothic16, FontWeight.Normal),
+)
 
 val OutfitDisplayFamily = FontFamily(
     Font(R.font.outfit, FontWeight.Normal),
@@ -28,91 +40,103 @@ val JetBrainsMonoFamily = FontFamily(
     Font(R.font.jetbrains_mono, FontWeight.Bold),
 )
 
-fun buildLuxuryTypography(scale: Float = 1.0f): Typography = Typography(
-    displayLarge = TextStyle(
-        fontFamily = OutfitDisplayFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = (42f * scale).sp,
-        lineHeight = (48f * scale).sp,
-        letterSpacing = (-0.5f).sp,
-    ),
-    displayMedium = TextStyle(
-        fontFamily = OutfitDisplayFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = (32f * scale).sp,
-        lineHeight = (38f * scale).sp,
-        letterSpacing = (-0.25f).sp,
-    ),
-    headlineMedium = TextStyle(
-        fontFamily = OutfitDisplayFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = (24f * scale).sp,
-        lineHeight = (30f * scale).sp,
-        letterSpacing = 0.2.sp,
-    ),
-    titleLarge = TextStyle(
-        fontFamily = OutfitDisplayFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = (20f * scale).sp,
-        lineHeight = (26f * scale).sp,
-        letterSpacing = 0.3.sp,
-    ),
-    titleMedium = TextStyle(
-        fontFamily = JakartaSansFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = (16f * scale).sp,
-        lineHeight = (22f * scale).sp,
-        letterSpacing = 0.15.sp,
-    ),
-    titleSmall = TextStyle(
-        fontFamily = JakartaSansFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = (14f * scale).sp,
-        lineHeight = (20f * scale).sp,
-        letterSpacing = 0.1.sp,
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = JakartaSansFamily,
-        fontWeight = FontWeight.Normal,
-        fontSize = (15f * scale).sp,
-        lineHeight = (22f * scale).sp,
-        letterSpacing = 0.2.sp,
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = JakartaSansFamily,
-        fontWeight = FontWeight.Normal,
-        fontSize = (13.5f * scale).sp,
-        lineHeight = (19f * scale).sp,
-        letterSpacing = 0.2.sp,
-    ),
-    bodySmall = TextStyle(
-        fontFamily = JakartaSansFamily,
-        fontWeight = FontWeight.Normal,
-        fontSize = (12f * scale).sp,
-        lineHeight = (16f * scale).sp,
-        letterSpacing = 0.25.sp,
-    ),
-    labelLarge = TextStyle(
-        fontFamily = OutfitDisplayFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = (13.5f * scale).sp,
-        lineHeight = (18f * scale).sp,
-        letterSpacing = 0.6.sp,
-    ),
-    labelMedium = TextStyle(
-        fontFamily = JetBrainsMonoFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = (11.5f * scale).sp,
-        lineHeight = (15f * scale).sp,
-        letterSpacing = 0.4.sp,
-    ),
-    labelSmall = TextStyle(
-        fontFamily = JetBrainsMonoFamily,
-        fontWeight = FontWeight.Normal,
-        fontSize = (10.5f * scale).sp,
-        lineHeight = (14f * scale).sp,
-        letterSpacing = 0.4.sp,
-    ),
-)
+fun dotMatrixFamilyFor(style: DotMatrixStyle): FontFamily = when (style) {
+    DotMatrixStyle.DOTO -> DotoMatrixFamily
+    DotMatrixStyle.DOT_GOTHIC -> DotGothicFamily
+    DotMatrixStyle.CLEAN_MONO -> OutfitDisplayFamily
+}
 
-val Typography = buildLuxuryTypography(1.0f)
+fun buildNothingTypography(
+    scale: Float = 1.0f,
+    dotStyle: DotMatrixStyle = DotMatrixStyle.DOTO,
+): Typography {
+    val matrixFont = dotMatrixFamilyFor(dotStyle)
+    return Typography(
+        displayLarge = TextStyle(
+            fontFamily = matrixFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = (40f * scale).sp,
+            lineHeight = (46f * scale).sp,
+            letterSpacing = 0.5.sp,
+        ),
+        displayMedium = TextStyle(
+            fontFamily = matrixFont,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = (30f * scale).sp,
+            lineHeight = (36f * scale).sp,
+            letterSpacing = 0.4.sp,
+        ),
+        headlineMedium = TextStyle(
+            fontFamily = matrixFont,
+            fontWeight = FontWeight.Bold,
+            fontSize = (23f * scale).sp,
+            lineHeight = (29f * scale).sp,
+            letterSpacing = 0.8.sp,
+        ),
+        titleLarge = TextStyle(
+            fontFamily = matrixFont,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = (19f * scale).sp,
+            lineHeight = (25f * scale).sp,
+            letterSpacing = 0.6.sp,
+        ),
+        titleMedium = TextStyle(
+            fontFamily = JakartaSansFamily,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = (15.5f * scale).sp,
+            lineHeight = (21f * scale).sp,
+            letterSpacing = 0.15.sp,
+        ),
+        titleSmall = TextStyle(
+            fontFamily = JakartaSansFamily,
+            fontWeight = FontWeight.Medium,
+            fontSize = (13.5f * scale).sp,
+            lineHeight = (19f * scale).sp,
+            letterSpacing = 0.1.sp,
+        ),
+        bodyLarge = TextStyle(
+            fontFamily = JakartaSansFamily,
+            fontWeight = FontWeight.Normal,
+            fontSize = (15f * scale).sp,
+            lineHeight = (22f * scale).sp,
+            letterSpacing = 0.15.sp,
+        ),
+        bodyMedium = TextStyle(
+            fontFamily = JakartaSansFamily,
+            fontWeight = FontWeight.Normal,
+            fontSize = (13.5f * scale).sp,
+            lineHeight = (19f * scale).sp,
+            letterSpacing = 0.15.sp,
+        ),
+        bodySmall = TextStyle(
+            fontFamily = JakartaSansFamily,
+            fontWeight = FontWeight.Normal,
+            fontSize = (12f * scale).sp,
+            lineHeight = (16.5f * scale).sp,
+            letterSpacing = 0.2.sp,
+        ),
+        labelLarge = TextStyle(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = (12.5f * scale).sp,
+            lineHeight = (17f * scale).sp,
+            letterSpacing = 0.8.sp,
+        ),
+        labelMedium = TextStyle(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.Medium,
+            fontSize = (11.5f * scale).sp,
+            lineHeight = (15f * scale).sp,
+            letterSpacing = 0.5.sp,
+        ),
+        labelSmall = TextStyle(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.Normal,
+            fontSize = (10.5f * scale).sp,
+            lineHeight = (14f * scale).sp,
+            letterSpacing = 0.5.sp,
+        ),
+    )
+}
+
+val Typography = buildNothingTypography(1.0f, DotMatrixStyle.DOTO)

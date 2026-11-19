@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.model.EqualizerProfile
 
 @Database(
@@ -12,8 +14,9 @@ import com.example.model.EqualizerProfile
         SavedEqProfileEntity::class,
         DeviceProfileEntity::class,
         SecurityAuditLogEntity::class,
+        UpdateHistoryEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -21,10 +24,30 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun eqProfileDao(): EqProfileDao
     abstract fun deviceProfileDao(): DeviceProfileDao
     abstract fun securityAuditDao(): SecurityAuditDao
+    abstract fun updateHistoryDao(): UpdateHistoryDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `update_history` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `versionName` TEXT NOT NULL,
+                        `releaseTitle` TEXT NOT NULL,
+                        `releaseDate` TEXT NOT NULL,
+                        `changelog` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `sha256` TEXT,
+                        `timestamp` INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -32,7 +55,10 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "hardik_buds_pro.db",
-                ).build().also { INSTANCE = it }
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

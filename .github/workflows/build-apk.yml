@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       run_tests:
@@ -11,9 +13,14 @@ on:
         required: false
         default: true
         type: boolean
+      is_prerelease:
+        description: "Mark published tag release as Beta/Pre-release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -131,6 +138,48 @@ jobs:
             app/build/outputs/apk/debug/Hardik-Buds-Pro-Ultra-Premium-debug.apk.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish OTA GitHub Release (on v*.*.* version tags)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+          APK_DIR="app/build/outputs/apk/debug"
+          TAG_APK="${APK_DIR}/Hardik-Buds-Pro-Ultra-Premium-${TAG_NAME}.apk"
+          TAG_SHA="${TAG_APK}.sha256"
+
+          cp "${APK_DIR}/Hardik-Buds-Pro-Ultra-Premium-debug.apk" "$TAG_APK"
+          sha256sum "$TAG_APK" > "$TAG_SHA"
+          APK_SHA=$(cut -d ' ' -f1 "$TAG_SHA")
+          APK_SIZE=$(du -h "$TAG_APK" | cut -f1)
+
+          IS_PRE=""
+          if [[ "$TAG_NAME" == *-* ]] || [[ "${{ inputs.is_prerelease }}" == "true" ]]; then
+            IS_PRE="--prerelease"
+          fi
+
+          NOTES="## HARDIK BUDS PRO — ULTRA PREMIUM (${TAG_NAME})
+          
+- **Version:** ${TAG_NAME}
+- **APK Size:** ${APK_SIZE}
+- **SHA-256:** ${APK_SHA}
+
+### What's New
+- Built and verified automatically via GitHub Actions
+- Verified package ID & SHA-256 integrity for in-app OTA updates"
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$TAG_APK" "$TAG_SHA" --clobber
+            gh release edit "$TAG_NAME" --title "Hardik Buds Pro ${TAG_NAME}" --notes "$NOTES"
+          else
+            gh release create "$TAG_NAME" "$TAG_APK" "$TAG_SHA" \
+              --title "Hardik Buds Pro ${TAG_NAME}" \
+              --notes "$NOTES" \
+              $IS_PRE
+          fi
 
       - name: Upload failure reports (if build/test fails)
         if: failure()

@@ -22,17 +22,40 @@ import com.example.data.toDomain
 import com.example.data.toEntity
 import com.example.model.AncMode
 import com.example.model.AudioEngineCapabilities
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.le.ScanResult
+import android.companion.CompanionDeviceManager
+import android.content.Intent
+import android.content.IntentSender
+import android.os.Build
+import com.example.model.AudioOutputRoute
 import com.example.model.CustomizationSettings
 import com.example.model.DiscoveredAudioDevice
 import com.example.model.EarbudBrand
 import com.example.model.EqualizerProfile
 import com.example.model.FirmwareCatalogEntry
 import com.example.model.FirmwareUpdateState
+import com.example.model.HomeTheatreSettings
 import com.example.model.OwnerSecuritySettings
 import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
 import com.example.model.TouchControlConfig
+import com.example.BuildConfig
+import com.example.data.UpdateHistoryEntity
+import com.example.ota.GitHubReleaseService
+import com.example.ota.OtaApkDownloader
+import com.example.ota.OtaApkInstaller
+import com.example.ota.OtaCheckStatus
+import com.example.ota.OtaDownloadState
+import com.example.ota.OtaDownloadStatus
+import com.example.ota.OtaErrorInfo
+import com.example.ota.OtaErrorType
+import com.example.ota.OtaNotificationHelper
+import com.example.ota.OtaSettings
+import com.example.ota.OtaUiState
+import com.example.ota.OtaWorkScheduler
+import com.example.ota.SemVerComparator
 import com.example.permissions.PermissionManager
 import com.example.permissions.PermissionsSnapshot
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,11 +89,31 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
-    private val _firmwareState = MutableStateFlow(FirmwareUpdateState())
+    private val gitHubReleaseService = GitHubReleaseService(appContext)
+    private val otaDownloader = OtaApkDownloader(appContext, viewModelScope)
+
+    private val _otaSettings = MutableStateFlow(OtaSettings())
+    val otaSettings: StateFlow<OtaSettings> = _otaSettings.asStateFlow()
+
+    private val _otaUiState = MutableStateFlow(
+        OtaUiState(
+            currentVersionName = BuildConfig.VERSION_NAME,
+            currentVersionCode = BuildConfig.VERSION_CODE.toLong(),
+            canInstallUnknownApps = OtaApkInstaller.canRequestPackageInstalls(appContext),
+        ),
+    )
+    val otaUiState: StateFlow<OtaUiState> = _otaUiState.asStateFlow()
+
+    val otaDownloadState: StateFlow<OtaDownloadState> = otaDownloader.state
+
+    val updateHistory: StateFlow<List<UpdateHistoryEntity>> = db.updateHistoryDao().observeHistory()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _firmwareState = MutableStateFlow(FirmwareUpdateState(currentAppVersion = BuildConfig.VERSION_NAME))
     val firmwareState: StateFlow<FirmwareUpdateState> = _firmwareState.asStateFlow()
 
-    val customization: StateFlow<CustomizationSettings> = settingsRepo.customizationFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, CustomizationSettings())
+    private val _customization = MutableStateFlow(CustomizationSettings())
+    val customization: StateFlow<CustomizationSettings> = _customization.asStateFlow()
 
     val subwooferConfig: StateFlow<SubwooferConfig> = settingsRepo.subwooferConfigFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, SubwooferConfig())
@@ -109,31 +152,79 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     val isBluetoothEnabled: StateFlow<Boolean> = bluetoothController.isBluetoothEnabled
     val isBluetoothSupported: StateFlow<Boolean> = bluetoothController.isBluetoothSupported
     val isScanning: StateFlow<Boolean> = bluetoothController.isScanning
+    val isFastPairScanning: StateFlow<Boolean> = bluetoothController.isFastPairScanning
     val bondedDevices: StateFlow<List<DiscoveredAudioDevice>> = bluetoothController.bondedDevices
     val nearbyDevices: StateFlow<List<DiscoveredAudioDevice>> = bluetoothController.nearbyDevices
+    val fastPairDevices: StateFlow<List<DiscoveredAudioDevice>> = bluetoothController.fastPairDevices
     val activeDevice: StateFlow<DiscoveredAudioDevice?> = bluetoothController.activeDevice
     val bluetoothBanner: StateFlow<String?> = bluetoothController.statusBanner
 
     val audioCapabilities: StateFlow<AudioEngineCapabilities> = audioEngine.capabilities
+    val audioOutputRoutes: StateFlow<List<AudioOutputRoute>> = audioEngine.audioOutputRoutes
+    val smoothRampProgress: StateFlow<Float?> = audioEngine.smoothRampProgress
     val bassEnergy: StateFlow<Float> = audioEngine.bassEnergy
     val volumePercent: StateFlow<Int> = audioEngine.volumePercent
     val isMusicPlaying: StateFlow<Boolean> = audioEngine.isMusicPlaying
     val soundTestRunning: StateFlow<String?> = audioEngine.soundTestRunning
 
+    private val _theatreConnectedActive = MutableStateFlow(false)
+    private val _theatreTransitionStatus = MutableStateFlow("Ready for smooth cinema audio handoff")
+
+    val homeTheatreSettings: StateFlow<HomeTheatreSettings> = combine(
+        settingsRepo.homeTheatreSettingsFlow,
+        _theatreConnectedActive,
+        _theatreTransitionStatus,
+    ) { saved, active, status ->
+        saved.copy(
+            theatreConnectedActive = active,
+            lastSmoothTransitionStatus = status,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeTheatreSettings())
+
     init {
         seedPresetsIfNeeded()
         audioEngine.initialize()
+        viewModelScope.launch {
+            val savedProfiles = db.deviceProfileDao().observeDeviceProfiles().first()
+            val aliases = savedProfiles.associate { it.address to it.customAlias }
+            if (aliases.isNotEmpty()) {
+                bluetoothController.seedCustomAliases(aliases)
+                bluetoothController.refreshBondedAndConnectedDevices()
+            }
+        }
         bluetoothController.onDeviceConnectedCallback = { device ->
             handleDeviceConnected(device)
         }
         bluetoothController.onDeviceDisconnectedCallback = { address ->
             viewModelScope.launch {
                 db.connectionHistoryDao().markDisconnected(address, System.currentTimeMillis())
+                val smart = smartSettings.value
+                if (smart.disconnectAlertNotifications && smart.connectionNotifications) {
+                    bluetoothController.sendNotification(
+                        title = "Earbuds Disconnected",
+                        body = "Bluetooth link closed for $address",
+                        notificationId = 104,
+                    )
+                }
             }
         }
         bluetoothController.startListening()
 
         viewModelScope.launch {
+            val savedCustomization = settingsRepo.customizationFlow.first()
+            if (_customization.value == CustomizationSettings()) {
+                _customization.value = savedCustomization
+            }
+            val savedOta = settingsRepo.otaSettingsFlow.first()
+            if (_otaSettings.value == OtaSettings()) {
+                _otaSettings.value = savedOta
+            }
+            OtaNotificationHelper.ensureChannel(appContext)
+            OtaWorkScheduler.syncSchedule(appContext, _otaSettings.value)
+            seedInitialUpdateHistoryIfEmpty()
+            if (_otaSettings.value.autoCheckOnLaunch) {
+                checkForAppUpdates(userInitiated = false)
+            }
             val sec = settingsRepo.ownerSecurityFlow.first()
             _isAppUnlocked.value = !(sec.pinEnabled && sec.lockAppOnLaunch && sec.pinHash.isNotBlank())
         }
@@ -191,6 +282,123 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     fun startScan() {
         refreshPermissions()
         bluetoothController.startBleAndClassicScan()
+    }
+
+    fun startGoogleFastPairScan() {
+        refreshPermissions()
+        bluetoothController.startGoogleFastPairScan()
+    }
+
+    fun requestCompanionFastPair(onChooserReady: (IntentSender) -> Unit) {
+        refreshPermissions()
+        bluetoothController.requestCompanionFastPairing(
+            onChooserIntentReady = onChooserReady,
+            onError = { msg -> showToast(msg) },
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    fun handleCompanionDeviceResult(data: Intent?) {
+        if (data == null) return
+        val btDevice: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
+                ?: data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, ScanResult::class.java)?.device
+        } else {
+            @Suppress("DEPRECATION")
+            val raw = data.getParcelableExtra<android.os.Parcelable>(CompanionDeviceManager.EXTRA_DEVICE)
+            when (raw) {
+                is BluetoothDevice -> raw
+                is ScanResult -> raw.device
+                else -> null
+            }
+        }
+
+        val chosen = btDevice ?: return
+        val addr = chosen.address
+        val matched = (fastPairDevices.value + nearbyDevices.value + bondedDevices.value)
+            .firstOrNull { it.address == addr }
+        if (matched != null) {
+            connectOrSelectDevice(matched)
+        } else {
+            runCatching {
+                if (chosen.bondState != BluetoothDevice.BOND_BONDED) {
+                    chosen.createBond()
+                }
+            }
+            bluetoothController.refreshBondedAndConnectedDevices()
+        }
+        showToast("Google Fast Connection initiated for ${matched?.displayTitle ?: addr}")
+    }
+
+    fun updateHomeTheatreSettings(transform: (HomeTheatreSettings) -> HomeTheatreSettings) {
+        viewModelScope.launch {
+            settingsRepo.updateHomeTheatreSettings(transform(homeTheatreSettings.value))
+        }
+    }
+
+    fun pinHomeTheatreDevice(device: DiscoveredAudioDevice) {
+        viewModelScope.launch {
+            settingsRepo.updateHomeTheatreSettings(
+                homeTheatreSettings.value.copy(
+                    preferredTheatreAddress = device.address,
+                    preferredTheatreName = device.displayTitle,
+                ),
+            )
+            showToast("Pinned '${device.displayTitle}' as Home Theatre target")
+        }
+    }
+
+    fun smoothConnectHomeTheatre(
+        targetDevice: DiscoveredAudioDevice? = null,
+        route: AudioOutputRoute? = null,
+    ) {
+        val ht = homeTheatreSettings.value
+        val resolvedBt = targetDevice
+            ?: bondedDevices.value.firstOrNull { it.address == ht.preferredTheatreAddress }
+            ?: bondedDevices.value.firstOrNull { it.isHomeTheatreSpeaker }
+
+        if (resolvedBt != null && !resolvedBt.isConnected) {
+            connectOrSelectDevice(resolvedBt)
+        }
+
+        val targetName = resolvedBt?.displayTitle
+            ?: route?.productName
+            ?: ht.preferredTheatreName
+            ?: audioCapabilities.value.outputRouteLabel
+
+        _theatreConnectedActive.value = true
+        _theatreTransitionStatus.value = "Smoothly ramping cinema audio to $targetName..."
+
+        viewModelScope.launch {
+            if (ht.autoCinemaSubwoofer) {
+                settingsRepo.setActiveSoundMode(SoundMode.SURROUND_SOUND)
+                settingsRepo.updateSubwooferConfig(
+                    subwooferConfig.value.copy(
+                        enabled = true,
+                        lowFreqCutoffHz = ht.lfeCrossoverHz,
+                        presetName = "Cinema LFE",
+                    ),
+                )
+            }
+        }
+
+        audioEngine.runSmoothHomeTheatreTransition(
+            targetBassStrength = subwooferConfig.value.bassIntensity,
+            durationMs = ht.smoothTransitionMs,
+            enableRamp = ht.smoothFadeHandoff,
+        ) {
+            _theatreTransitionStatus.value = "Home Theatre active · $targetName (${ht.lfeCrossoverHz}Hz LFE)"
+            showToast("Home Theatre smoothly connected: $targetName")
+        }
+    }
+
+    fun disconnectHomeTheatreSmooth() {
+        _theatreConnectedActive.value = false
+        _theatreTransitionStatus.value = "Standard earbuds profile restored"
+        viewModelScope.launch {
+            settingsRepo.setActiveSoundMode(SoundMode.MUSIC)
+        }
+        showToast("Exited Home Theatre mode cleanly")
     }
 
     fun stopScan() = bluetoothController.stopScan()
@@ -300,6 +508,59 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSubwoofer(transform: (SubwooferConfig) -> SubwooferConfig) {
         viewModelScope.launch {
             settingsRepo.updateSubwooferConfig(transform(subwooferConfig.value))
+        }
+    }
+
+    fun resetSubwooferToDefaults() {
+        viewModelScope.launch {
+            settingsRepo.updateSubwooferConfig(SubwooferConfig())
+            showToast("Subwoofer Engine X reset to default tuning")
+        }
+    }
+
+    fun toggleGamingMode(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepo.updateSmartSettings(smartSettings.value.copy(gamingLowLatencyHint = enabled))
+            settingsRepo.setActiveSoundMode(if (enabled) SoundMode.GAMING else SoundMode.MUSIC)
+            showToast(if (enabled) "Gaming Mode active (Low-Latency audio profile)" else "Gaming Mode disabled")
+        }
+    }
+
+    fun renameDevice(device: DiscoveredAudioDevice, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        bluetoothController.renameDevice(device.address, trimmed)
+        viewModelScope.launch {
+            val existing = db.deviceProfileDao().getByAddress(device.address)
+            db.deviceProfileDao().upsert(
+                (existing ?: DeviceProfileEntity(
+                    address = device.address,
+                    customAlias = trimmed,
+                    brandName = device.brand.displayName,
+                    preferredAncMode = preferredAncMode.value.name,
+                    preferredSoundMode = activeSoundMode.value.name,
+                    touchConfigJson = "",
+                    firmwareVersion = device.firmwareRevision,
+                    isOwnerVerified = ownerSecurity.value.registeredDeviceAddress == device.address,
+                    lastLocationLabel = null,
+                    updatedAt = System.currentTimeMillis(),
+                )).copy(customAlias = trimmed, updatedAt = System.currentTimeMillis()),
+            )
+            showToast("Renamed device to '$trimmed'")
+        }
+    }
+
+    fun clearConnectionHistory() {
+        viewModelScope.launch {
+            db.connectionHistoryDao().clearAll()
+            showToast("Connection history cleared")
+        }
+    }
+
+    fun clearSecurityLogs() {
+        viewModelScope.launch {
+            db.securityAuditDao().clearAll()
+            showToast("Security audit logs cleared")
         }
     }
 
@@ -425,8 +686,10 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Customization & Smart Settings ---
     fun updateCustomization(transform: (CustomizationSettings) -> CustomizationSettings) {
+        val updated = transform(_customization.value)
+        _customization.value = updated
         viewModelScope.launch {
-            settingsRepo.updateCustomization(transform(customization.value))
+            settingsRepo.updateCustomization(updated)
         }
     }
 
@@ -606,6 +869,7 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         return res.fold(
             onSuccess = { restored ->
                 viewModelScope.launch {
+                    _customization.value = restored.customization
                     settingsRepo.updateCustomization(restored.customization)
                     settingsRepo.updateSubwooferConfig(restored.subwoofer)
                     settingsRepo.setActiveSoundMode(restored.soundMode)
@@ -622,13 +886,318 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    // --- OTA Auto Update System (GitHub Releases + WorkManager + Verified PackageInstaller) ---
+    private suspend fun seedInitialUpdateHistoryIfEmpty() {
+        val current = db.updateHistoryDao().observeHistory().first()
+        if (current.isEmpty()) {
+            db.updateHistoryDao().insert(
+                UpdateHistoryEntity(
+                    versionName = BuildConfig.VERSION_NAME,
+                    releaseTitle = "Hardik Buds Pro Ultra Premium (Installed)",
+                    releaseDate = "Current Build #${BuildConfig.VERSION_CODE}",
+                    changelog = "Currently installed production build (${appContext.packageName}).",
+                    status = "INSTALLED",
+                    sha256 = null,
+                    timestamp = System.currentTimeMillis(),
+                ),
+            )
+        }
+    }
+
+    fun refreshInstallPermissionState() {
+        val canInstall = OtaApkInstaller.canRequestPackageInstalls(appContext)
+        _otaUiState.value = _otaUiState.value.copy(
+            canInstallUnknownApps = canInstall,
+            error = if (canInstall && _otaUiState.value.error?.type == OtaErrorType.PERMISSION_DENIED) null else _otaUiState.value.error,
+        )
+    }
+
+    fun updateOtaSettings(transform: (OtaSettings) -> OtaSettings) {
+        val updated = transform(_otaSettings.value)
+        _otaSettings.value = updated
+        viewModelScope.launch {
+            settingsRepo.updateOtaSettings(updated)
+            OtaWorkScheduler.syncSchedule(appContext, updated)
+        }
+    }
+
+    fun checkForAppUpdates(userInitiated: Boolean = true) {
+        if (_otaUiState.value.checkStatus == OtaCheckStatus.CHECKING) return
+        val settings = _otaSettings.value
+        _otaUiState.value = _otaUiState.value.copy(
+            checkStatus = OtaCheckStatus.CHECKING,
+            statusHeadline = "Checking GitHub Releases (${settings.githubOwner}/${settings.githubRepo})...",
+            error = null,
+            canInstallUnknownApps = OtaApkInstaller.canRequestPackageInstalls(appContext),
+        )
+        viewModelScope.launch {
+            val res = gitHubReleaseService.fetchReleases(
+                owner = settings.githubOwner,
+                repo = settings.githubRepo,
+                channel = settings.channel,
+            )
+            val now = System.currentTimeMillis()
+            if (res.error != null) {
+                if (userInitiated) {
+                    _otaUiState.value = _otaUiState.value.copy(
+                        checkStatus = OtaCheckStatus.ERROR,
+                        availableReleases = res.allReleases,
+                        statusHeadline = res.error.type.title,
+                        error = res.error,
+                    )
+                    showToast(res.error.type.message)
+                } else {
+                    _otaUiState.value = _otaUiState.value.copy(
+                        checkStatus = OtaCheckStatus.IDLE,
+                        statusHeadline = "Auto-check paused (${res.error.type.title})",
+                    )
+                }
+                return@launch
+            }
+
+            val latest = res.latestForChannel
+            val nextSettings = settings.copy(
+                lastCheckedTimestamp = now,
+                lastKnownLatestVersion = latest?.versionName,
+            )
+            _otaSettings.value = nextSettings
+            settingsRepo.updateOtaSettings(nextSettings)
+
+            if (latest == null) {
+                _otaUiState.value = _otaUiState.value.copy(
+                    checkStatus = OtaCheckStatus.ERROR,
+                    availableReleases = res.allReleases,
+                    statusHeadline = "No releases found",
+                    error = OtaErrorInfo(OtaErrorType.RELEASE_NOT_FOUND),
+                )
+                return@launch
+            }
+
+            val isNewer = SemVerComparator.isNewerVersion(latest.versionName, BuildConfig.VERSION_NAME)
+            if (isNewer) {
+                _otaUiState.value = _otaUiState.value.copy(
+                    checkStatus = OtaCheckStatus.UPDATE_AVAILABLE,
+                    latestRelease = latest,
+                    availableReleases = res.allReleases,
+                    statusHeadline = "Update available: v${latest.versionName}",
+                    error = null,
+                )
+                _firmwareState.value = _firmwareState.value.copy(
+                    latestAppVersion = latest.versionName,
+                    appUpdateNotes = latest.releaseNotes.lines().filter { it.isNotBlank() }.take(8),
+                )
+                db.updateHistoryDao().insert(
+                    UpdateHistoryEntity(
+                        versionName = latest.versionName,
+                        releaseTitle = latest.releaseTitle,
+                        releaseDate = latest.publishedAt,
+                        changelog = latest.releaseNotes.take(400),
+                        status = "AVAILABLE",
+                        sha256 = latest.expectedSha256,
+                        timestamp = now,
+                    ),
+                )
+                if (_otaSettings.value.notificationsEnabled) {
+                    OtaNotificationHelper.notifyUpdateAvailable(appContext, latest)
+                }
+                if (userInitiated) {
+                    showToast("New ${settings.channel.label} v${latest.versionName} available")
+                }
+            } else {
+                _otaUiState.value = _otaUiState.value.copy(
+                    checkStatus = OtaCheckStatus.UP_TO_DATE,
+                    latestRelease = latest,
+                    availableReleases = res.allReleases,
+                    statusHeadline = "You're up to date (v${BuildConfig.VERSION_NAME})",
+                    error = null,
+                )
+                _firmwareState.value = _firmwareState.value.copy(
+                    latestAppVersion = latest.versionName,
+                )
+                if (userInitiated) {
+                    db.updateHistoryDao().insert(
+                        UpdateHistoryEntity(
+                            versionName = latest.versionName,
+                            releaseTitle = latest.releaseTitle,
+                            releaseDate = latest.publishedAt,
+                            changelog = "Checked GitHub Releases — already on latest v${BuildConfig.VERSION_NAME}.",
+                            status = "UP_TO_DATE",
+                            sha256 = latest.expectedSha256,
+                            timestamp = now,
+                        ),
+                    )
+                    showToast("You're up to date (v${BuildConfig.VERSION_NAME})")
+                }
+            }
+        }
+    }
+
+    fun startOtaDownload() {
+        val release = _otaUiState.value.latestRelease
+        if (release == null || release.apkDownloadUrl.isNullOrBlank()) {
+            _otaUiState.value = _otaUiState.value.copy(
+                error = OtaErrorInfo(OtaErrorType.APK_MISSING),
+            )
+            return
+        }
+        val expectedSha = _otaSettings.value.expectedSha256Override.trim().takeIf { it.length == 64 }
+            ?: release.expectedSha256
+        otaDownloader.startOrResumeDownload(
+            release = release,
+            expectedSha256 = expectedSha,
+            installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+            installedVersionName = BuildConfig.VERSION_NAME,
+            resumeExisting = false,
+            onCompletedVerified = { verified ->
+                viewModelScope.launch {
+                    db.updateHistoryDao().insert(
+                        UpdateHistoryEntity(
+                            versionName = verified.verifiedVersionName ?: release.versionName,
+                            releaseTitle = release.releaseTitle,
+                            releaseDate = release.publishedAt,
+                            changelog = release.releaseNotes.take(400),
+                            status = "VERIFIED",
+                            sha256 = verified.computedSha256,
+                            timestamp = System.currentTimeMillis(),
+                        ),
+                    )
+                    if (_otaSettings.value.notificationsEnabled) {
+                        OtaNotificationHelper.notifyDownloadCompleted(
+                            appContext,
+                            verified.verifiedVersionName ?: release.versionName,
+                        )
+                    }
+                    showToast("Update APK verified & ready to install")
+                }
+            },
+            onFailed = { err ->
+                viewModelScope.launch {
+                    db.updateHistoryDao().insert(
+                        UpdateHistoryEntity(
+                            versionName = release.versionName,
+                            releaseTitle = release.releaseTitle,
+                            releaseDate = release.publishedAt,
+                            changelog = err.detail ?: err.type.message,
+                            status = "FAILED",
+                            sha256 = null,
+                            timestamp = System.currentTimeMillis(),
+                        ),
+                    )
+                    if (_otaSettings.value.notificationsEnabled) {
+                        OtaNotificationHelper.notifyDownloadFailed(appContext, err.type.title)
+                    }
+                }
+            },
+        )
+    }
+
+    fun pauseOtaDownload() = otaDownloader.pauseDownload()
+
+    fun resumeOtaDownload() {
+        val release = _otaUiState.value.latestRelease ?: return
+        otaDownloader.resumeDownload(
+            onCompletedVerified = { verified ->
+                viewModelScope.launch {
+                    if (_otaSettings.value.notificationsEnabled) {
+                        OtaNotificationHelper.notifyDownloadCompleted(
+                            appContext,
+                            verified.verifiedVersionName ?: release.versionName,
+                        )
+                    }
+                    showToast("Resumed download verified & ready")
+                }
+            },
+            onFailed = { err ->
+                if (_otaSettings.value.notificationsEnabled) {
+                    OtaNotificationHelper.notifyDownloadFailed(appContext, err.type.title)
+                }
+            },
+        )
+    }
+
+    fun cancelOtaDownload() {
+        otaDownloader.cancelDownload()
+        showToast("Update download cancelled")
+    }
+
+    fun retryOtaDownload() {
+        val release = _otaUiState.value.latestRelease
+        if (release == null) {
+            checkForAppUpdates(userInitiated = true)
+            return
+        }
+        otaDownloader.retryDownload(
+            onCompletedVerified = { verified ->
+                viewModelScope.launch {
+                    if (_otaSettings.value.notificationsEnabled) {
+                        OtaNotificationHelper.notifyDownloadCompleted(
+                            appContext,
+                            verified.verifiedVersionName ?: release.versionName,
+                        )
+                    }
+                    showToast("Update APK verified & ready to install")
+                }
+            },
+            onFailed = { err ->
+                if (_otaSettings.value.notificationsEnabled) {
+                    OtaNotificationHelper.notifyDownloadFailed(appContext, err.type.title)
+                }
+            },
+        )
+    }
+
+    fun installVerifiedUpdate(): OtaErrorInfo? {
+        val dl = otaDownloadState.value
+        if (dl.status != OtaDownloadStatus.READY_TO_INSTALL || dl.localApkPath.isNullOrBlank()) {
+            val err = OtaErrorInfo(OtaErrorType.INVALID_APK, "Complete & verify the APK download before installing.")
+            _otaUiState.value = _otaUiState.value.copy(error = err)
+            return err
+        }
+        val err = OtaApkInstaller.launchSystemPackageInstaller(appContext, dl.localApkPath)
+        refreshInstallPermissionState()
+        if (err != null) {
+            _otaUiState.value = _otaUiState.value.copy(error = err)
+            showToast(err.type.title)
+        } else {
+            val rel = _otaUiState.value.latestRelease
+            viewModelScope.launch {
+                db.updateHistoryDao().insert(
+                    UpdateHistoryEntity(
+                        versionName = dl.verifiedVersionName ?: (rel?.versionName ?: BuildConfig.VERSION_NAME),
+                        releaseTitle = rel?.releaseTitle ?: "Hardik Buds Pro Update",
+                        releaseDate = rel?.publishedAt ?: "Installer",
+                        changelog = "Launched Android Package Installer with user confirmation.",
+                        status = "INSTALL_PROMPTED",
+                        sha256 = dl.computedSha256,
+                        timestamp = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        }
+        return err
+    }
+
+    fun clearOtaHistory() {
+        viewModelScope.launch {
+            db.updateHistoryDao().clearAll()
+            seedInitialUpdateHistoryIfEmpty()
+            showToast("Cleared OTA update check logs")
+        }
+    }
+
     fun resetAllSettings() {
+        _customization.value = CustomizationSettings()
+        _otaSettings.value = OtaSettings()
+        otaDownloader.cancelDownload()
         viewModelScope.launch {
             settingsRepo.resetAllPreferences()
             db.eqProfileDao().deleteAllCustomProfiles()
             db.connectionHistoryDao().clearAll()
             db.deviceProfileDao().clearAll()
             db.securityAuditDao().clearAll()
+            db.updateHistoryDao().clearAll()
+            seedInitialUpdateHistoryIfEmpty()
+            OtaWorkScheduler.syncSchedule(appContext, OtaSettings())
             BudsMonitorService.stop(appContext)
             _isAppUnlocked.value = true
             showToast("All settings & local records reset to factory defaults")

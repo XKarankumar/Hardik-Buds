@@ -1,14 +1,18 @@
 package com.example.ui.navigation
 
 import android.Manifest
+import android.app.Activity
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,35 +27,41 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,16 +84,19 @@ import androidx.navigation.compose.rememberNavController
 import coil.compose.AsyncImage
 import com.example.model.IconStyleOption
 import com.example.permissions.PermissionManager
+import com.example.ui.components.DotMatrixLogoMark
 import com.example.ui.components.LuxActionButton
 import com.example.ui.components.LuxGlassCard
+import com.example.ui.components.StatusBadgePill
 import com.example.ui.screens.CustomizeScreen
 import com.example.ui.screens.DevicesScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SoundScreen
+import com.example.ui.screens.SplashScreen
+import com.example.ui.screens.UpdateCenterScreen
 import com.example.ui.theme.HardikBudsProTheme
 import com.example.ui.theme.LocalLuxThemeExtras
-import com.example.ui.theme.StatusCritical
 import com.example.viewmodel.BudsViewModel
 
 object BudsRoutes {
@@ -92,6 +105,7 @@ object BudsRoutes {
     const val ROUTE_DEVICES = "devices"
     const val ROUTE_CUSTOMIZE = "customize"
     const val ROUTE_SETTINGS = "settings"
+    const val ROUTE_UPDATE_CENTER = "update_center"
 }
 
 private data class NavItem(
@@ -103,12 +117,17 @@ private data class NavItem(
 )
 
 @Composable
-fun HardikBudsProRoot(viewModel: BudsViewModel) {
+fun HardikBudsProRoot(
+    viewModel: BudsViewModel,
+    skipSplash: Boolean = false,
+    openUpdateCenterInitially: Boolean = false,
+) {
     val customization by viewModel.customization.collectAsStateWithLifecycle()
     val isUnlocked by viewModel.isAppUnlocked.collectAsStateWithLifecycle()
     val ownerSecurity by viewModel.ownerSecurity.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
     val bluetoothBanner by viewModel.bluetoothBanner.collectAsStateWithLifecycle()
+    var showSplash by remember(skipSplash) { mutableStateOf(!skipSplash) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -139,28 +158,39 @@ fun HardikBudsProRoot(viewModel: BudsViewModel) {
                     model = customization.customWallpaperUri,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().alpha(0.24f),
+                    modifier = Modifier.fillMaxSize().alpha(0.22f),
                 )
             }
 
             AnimatedContent(
-                targetState = isUnlocked || !ownerSecurity.pinEnabled,
+                targetState = showSplash,
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
-                label = "lockGate",
-            ) { unlocked ->
-                if (!unlocked) {
-                    OwnerPinLockOverlay(
-                        ownerName = ownerSecurity.ownerName,
-                        pinLength = ownerSecurity.pinLength,
-                        recoveryQuestion = ownerSecurity.recoveryQuestion,
-                        onVerifyPin = { viewModel.verifyPin(it) },
-                        onRecoverPin = { ans, newPin -> viewModel.recoverPinWithAnswer(ans, newPin) },
-                    )
+                label = "splashGate",
+            ) { splashing ->
+                if (splashing) {
+                    SplashScreen(onSplashFinished = { showSplash = false })
                 } else {
-                    MainAdaptiveShell(
-                        viewModel = viewModel,
-                        snackbarHostState = snackbarHostState,
-                    )
+                    AnimatedContent(
+                        targetState = isUnlocked || !ownerSecurity.pinEnabled,
+                        transitionSpec = { fadeIn() togetherWith fadeOut() },
+                        label = "lockGate",
+                    ) { unlocked ->
+                        if (!unlocked) {
+                            OwnerPinLockOverlay(
+                                ownerName = ownerSecurity.ownerName,
+                                pinLength = ownerSecurity.pinLength,
+                                recoveryQuestion = ownerSecurity.recoveryQuestion,
+                                onVerifyPin = { viewModel.verifyPin(it) },
+                                onRecoverPin = { ans, newPin -> viewModel.recoverPinWithAnswer(ans, newPin) },
+                            )
+                        } else {
+                            MainAdaptiveShell(
+                                viewModel = viewModel,
+                                snackbarHostState = snackbarHostState,
+                                openUpdateCenterInitially = openUpdateCenterInitially,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -171,10 +201,12 @@ fun HardikBudsProRoot(viewModel: BudsViewModel) {
 private fun MainAdaptiveShell(
     viewModel: BudsViewModel,
     snackbarHostState: SnackbarHostState,
+    openUpdateCenterInitially: Boolean = false,
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: BudsRoutes.ROUTE_HOME
+    var soundInitialTab by remember { mutableIntStateOf(0) }
 
     val customization by viewModel.customization.collectAsStateWithLifecycle()
     val activeDevice by viewModel.activeDevice.collectAsStateWithLifecycle()
@@ -199,11 +231,35 @@ private fun MainAdaptiveShell(
     val connectionHistory by viewModel.connectionHistory.collectAsStateWithLifecycle()
     val securityLogs by viewModel.securityLogs.collectAsStateWithLifecycle()
     val firmwareState by viewModel.firmwareState.collectAsStateWithLifecycle()
+    val fastPairDevices by viewModel.fastPairDevices.collectAsStateWithLifecycle()
+    val isFastPairScanning by viewModel.isFastPairScanning.collectAsStateWithLifecycle()
+    val audioOutputRoutes by viewModel.audioOutputRoutes.collectAsStateWithLifecycle()
+    val homeTheatre by viewModel.homeTheatreSettings.collectAsStateWithLifecycle()
+    val smoothRampProgress by viewModel.smoothRampProgress.collectAsStateWithLifecycle()
+    val otaUiState by viewModel.otaUiState.collectAsStateWithLifecycle()
+    val otaSettings by viewModel.otaSettings.collectAsStateWithLifecycle()
+    val otaDownloadState by viewModel.otaDownloadState.collectAsStateWithLifecycle()
+    val updateHistory by viewModel.updateHistory.collectAsStateWithLifecycle()
+
+    LaunchedEffect(openUpdateCenterInitially) {
+        if (openUpdateCenterInitially) {
+            navController.navigate(BudsRoutes.ROUTE_UPDATE_CENTER) {
+                launchSingleTop = true
+            }
+        }
+    }
 
     val permLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-        onResult = {
-            viewModel.refreshPermissions()
+        onResult = { viewModel.refreshPermissions() },
+    )
+
+    val companionFastPairLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult(),
+        onResult = { res ->
+            if (res.resultCode == Activity.RESULT_OK) {
+                viewModel.handleCompanionDeviceResult(res.data)
+            }
         },
     )
 
@@ -236,30 +292,35 @@ private fun MainAdaptiveShell(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
                 if (!useRail) {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                        tonalElevation = 0.dp,
-                    ) {
-                        navItems.forEach { item ->
-                            val selected = currentRoute == item.route
-                            val iconVec = when (customization.iconStyle) {
-                                IconStyleOption.OUTLINED -> item.outlinedIcon
-                                IconStyleOption.FILLED, IconStyleOption.DUOTONE -> if (selected) item.filledIcon else item.outlinedIcon
+                    Column {
+                        HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            tonalElevation = 0.dp,
+                        ) {
+                            navItems.forEach { item ->
+                                val selected = currentRoute == item.route
+                                val iconVec = when (customization.iconStyle) {
+                                    IconStyleOption.OUTLINED -> item.outlinedIcon
+                                    IconStyleOption.FILLED, IconStyleOption.DUOTONE -> if (selected) item.filledIcon else item.outlinedIcon
+                                }
+                                NavigationBarItem(
+                                    selected = selected,
+                                    onClick = { navigateTo(item.route) },
+                                    icon = { Icon(imageVector = iconVec, contentDescription = item.label) },
+                                    label = if (customization.showBottomNavLabels) {
+                                        { Text(item.label.uppercase(), style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                                    } else null,
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = extras.signalRed,
+                                        selectedTextColor = extras.signalRed,
+                                        indicatorColor = extras.signalRed.copy(alpha = 0.14f),
+                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    ),
+                                    modifier = Modifier.testTag(item.testTag),
+                                )
                             }
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = { navigateTo(item.route) },
-                                icon = {
-                                    Icon(
-                                        imageVector = iconVec,
-                                        contentDescription = item.label,
-                                    )
-                                },
-                                label = if (customization.showBottomNavLabels) {
-                                    { Text(item.label, maxLines = 1) }
-                                } else null,
-                                modifier = Modifier.testTag(item.testTag),
-                            )
                         }
                     }
                 }
@@ -272,24 +333,35 @@ private fun MainAdaptiveShell(
             ) {
                 if (useRail) {
                     NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                        containerColor = MaterialTheme.colorScheme.background,
                         modifier = Modifier.fillMaxHeight(),
                     ) {
                         Spacer(Modifier.height(12.dp))
                         navItems.forEach { item ->
                             val selected = currentRoute == item.route
-                            val iconVec = if (selected) item.filledIcon else item.outlinedIcon
+                            val iconVec = when (customization.iconStyle) {
+                                IconStyleOption.OUTLINED -> item.outlinedIcon
+                                IconStyleOption.FILLED, IconStyleOption.DUOTONE -> if (selected) item.filledIcon else item.outlinedIcon
+                            }
                             NavigationRailItem(
                                 selected = selected,
                                 onClick = { navigateTo(item.route) },
                                 icon = { Icon(iconVec, contentDescription = item.label) },
                                 label = if (customization.showBottomNavLabels) {
-                                    { Text(item.label, maxLines = 1) }
+                                    { Text(item.label.uppercase(), style = MaterialTheme.typography.labelSmall, maxLines = 1) }
                                 } else null,
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = extras.signalRed,
+                                    selectedTextColor = extras.signalRed,
+                                    indicatorColor = extras.signalRed.copy(alpha = 0.14f),
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
                                 modifier = Modifier.testTag(item.testTag),
                             )
                         }
                     }
+                    VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline)
                 }
 
                 Box(
@@ -318,6 +390,10 @@ private fun MainAdaptiveShell(
                                 smartSettings = smartSettings,
                                 ownerSecurity = ownerSecurity,
                                 firmwareState = firmwareState,
+                                fastPairCount = fastPairDevices.size,
+                                isFastPairScanning = isFastPairScanning,
+                                homeTheatre = homeTheatre,
+                                smoothRampProgress = smoothRampProgress,
                                 onRequestBluetoothPerms = {
                                     val perms = buildList {
                                         addAll(PermissionManager.requiredBluetoothPermissions())
@@ -329,15 +405,32 @@ private fun MainAdaptiveShell(
                                 },
                                 onConnectOrSwitch = { viewModel.connectOrSelectDevice(it) },
                                 onDisconnect = { viewModel.disconnectActiveDevice() },
+                                onStartGoogleFastPair = { viewModel.startGoogleFastPairScan() },
+                                onOpenFastPairSheet = {
+                                    viewModel.requestCompanionFastPair { sender ->
+                                        companionFastPairLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                                    }
+                                },
+                                onSmoothConnectHomeTheatre = { viewModel.smoothConnectHomeTheatre() },
+                                onDisconnectHomeTheatre = { viewModel.disconnectHomeTheatreSmooth() },
                                 onNavigateToDevices = { navigateTo(BudsRoutes.ROUTE_DEVICES) },
-                                onNavigateToSound = { navigateTo(BudsRoutes.ROUTE_SOUND) },
+                                onNavigateToSoundTab = { tabIdx ->
+                                    soundInitialTab = tabIdx.coerceIn(0, 3)
+                                    navigateTo(BudsRoutes.ROUTE_SOUND)
+                                },
                                 onNavigateToSettings = { navigateTo(BudsRoutes.ROUTE_SETTINGS) },
                                 onSelectSoundMode = { viewModel.selectSoundMode(it) },
                                 onSelectAncMode = { viewModel.selectAncMode(it) },
                                 onToggleSubwoofer = { enabled -> viewModel.updateSubwoofer { it.copy(enabled = enabled) } },
                                 onChangeBassIntensity = { v -> viewModel.updateSubwoofer { it.copy(bassIntensity = v, presetName = "Custom") } },
-                                onCheckUpdates = { viewModel.checkFirmwareAndAppUpdates() },
+                                onToggleGamingMode = { enabled -> viewModel.toggleGamingMode(enabled) },
+                                onCheckUpdates = { navController.navigate(BudsRoutes.ROUTE_UPDATE_CENTER) },
                                 onLockNow = { viewModel.lockAppNow() },
+                                onSelectUiMode = { mode ->
+                                    viewModel.updateCustomization { it.copy(uiMode = mode) }
+                                },
+                                otaStatusLabel = otaUiState.statusHeadline,
+                                otaUpdateAvailable = otaUiState.checkStatus == com.example.ota.OtaCheckStatus.UPDATE_AVAILABLE,
                             )
                         }
 
@@ -351,13 +444,16 @@ private fun MainAdaptiveShell(
                                 preferredAncMode = ancMode,
                                 touchConfig = touchConfig,
                                 capabilities = audioCaps,
+                                smartSettings = smartSettings,
                                 bassEnergy = bassEnergy,
                                 soundTestRunning = soundTestRunning,
                                 micPermissionGranted = permissions.microphoneGranted,
+                                initialTab = soundInitialTab,
                                 onRequestMicPermission = {
                                     permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                                 },
                                 onUpdateSubwoofer = { viewModel.updateSubwoofer(it) },
+                                onResetSubwoofer = { viewModel.resetSubwooferToDefaults() },
                                 onSelectEqPreset = { viewModel.selectEqPreset(it) },
                                 onUpdateEqBand = { idx, db -> viewModel.updateActiveEqBand(idx, db) },
                                 onSaveCustomEq = { viewModel.saveCustomEqProfile(it) },
@@ -367,6 +463,7 @@ private fun MainAdaptiveShell(
                                 onImportEqJson = { viewModel.importEqJson(it) },
                                 onSelectSoundMode = { viewModel.selectSoundMode(it) },
                                 onSelectAncMode = { viewModel.selectAncMode(it) },
+                                onToggleGamingMode = { enabled -> viewModel.toggleGamingMode(enabled) },
                                 onUpdateTouchConfig = { viewModel.updateTouchConfig(it) },
                                 onRunSoundTest = { viewModel.runSoundTest(it) },
                                 onStopSoundTest = { viewModel.stopSoundTest() },
@@ -379,17 +476,33 @@ private fun MainAdaptiveShell(
                                 activeDevice = activeDevice,
                                 bondedDevices = bondedDevices,
                                 nearbyDevices = nearbyDevices,
+                                fastPairDevices = fastPairDevices,
+                                audioOutputRoutes = audioOutputRoutes,
                                 connectionHistory = connectionHistory,
                                 isBluetoothEnabled = isBtEnabled,
                                 isScanning = isScanning,
+                                isFastPairScanning = isFastPairScanning,
+                                homeTheatre = homeTheatre,
+                                smoothRampProgress = smoothRampProgress,
                                 permissions = permissions,
                                 onStartScan = { viewModel.startScan() },
                                 onStopScan = { viewModel.stopScan() },
+                                onStartGoogleFastPairScan = { viewModel.startGoogleFastPairScan() },
+                                onLaunchCompanionFastPair = {
+                                    viewModel.requestCompanionFastPair { sender ->
+                                        companionFastPairLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                                    }
+                                },
                                 onRequestBtPerms = {
                                     permLauncher.launch(PermissionManager.requiredBluetoothPermissions())
                                 },
                                 onConnectOrSelect = { viewModel.connectOrSelectDevice(it) },
                                 onDisconnect = { viewModel.disconnectActiveDevice() },
+                                onRenameDevice = { dev, newName -> viewModel.renameDevice(dev, newName) },
+                                onPinHomeTheatreDevice = { dev -> viewModel.pinHomeTheatreDevice(dev) },
+                                onUpdateHomeTheatre = { viewModel.updateHomeTheatreSettings(it) },
+                                onSmoothConnectHomeTheatre = { dev, route -> viewModel.smoothConnectHomeTheatre(dev, route) },
+                                onDisconnectHomeTheatre = { viewModel.disconnectHomeTheatreSmooth() },
                                 onFindEarbudsPing = { viewModel.triggerFindEarbudsPing() },
                             )
                         }
@@ -405,22 +518,56 @@ private fun MainAdaptiveShell(
                             SettingsScreen(
                                 activeDevice = activeDevice,
                                 smartSettings = smartSettings,
+                                customization = customization,
                                 ownerSecurity = ownerSecurity,
                                 securityLogs = securityLogs,
                                 permissions = permissions,
                                 firmwareState = firmwareState,
+                                otaUiState = otaUiState,
+                                otaSettings = otaSettings,
+                                updateHistory = updateHistory,
                                 onUpdateSmartSettings = { viewModel.updateSmartSettings(it) },
+                                onUpdateCustomization = { viewModel.updateCustomization(it) },
+                                onNavigateToCustomize = { navigateTo(BudsRoutes.ROUTE_CUSTOMIZE) },
                                 onRegisterOwner = { name, contact, pin, len, q, a, bind ->
                                     viewModel.registerOwnerAndPin(name, contact, pin, len, q, a, bind)
                                 },
                                 onUpdateOwnerFlags = { viewModel.updateOwnerSecurityFlags(it) },
                                 onRecoverPin = { ans, newPin -> viewModel.recoverPinWithAnswer(ans, newPin) },
+                                onClearHistory = { viewModel.clearConnectionHistory() },
+                                onClearSecurityLogs = { viewModel.clearSecurityLogs() },
                                 onRequestPermissions = { perms -> permLauncher.launch(perms) },
                                 onCheckFirmwareAndAppUpdates = { viewModel.checkFirmwareAndAppUpdates() },
+                                onCheckOtaUpdates = { viewModel.checkForAppUpdates(userInitiated = true) },
+                                onOpenUpdateCenter = {
+                                    navController.navigate(BudsRoutes.ROUTE_UPDATE_CENTER) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onUpdateOtaSettings = { viewModel.updateOtaSettings(it) },
                                 onExportFullBackup = { viewModel.exportFullBackup() },
                                 onImportFullBackup = { viewModel.importFullBackup(it) },
                                 onResetAllSettings = { viewModel.resetAllSettings() },
                                 onShowToast = { viewModel.showToast(it) },
+                            )
+                        }
+
+                        composable(BudsRoutes.ROUTE_UPDATE_CENTER) {
+                            UpdateCenterScreen(
+                                otaUiState = otaUiState,
+                                otaSettings = otaSettings,
+                                downloadState = otaDownloadState,
+                                updateHistory = updateHistory,
+                                onNavigateBack = { navController.popBackStack() },
+                                onCheckForUpdates = { viewModel.checkForAppUpdates(userInitiated = true) },
+                                onStartDownload = { viewModel.startOtaDownload() },
+                                onPauseDownload = { viewModel.pauseOtaDownload() },
+                                onResumeDownload = { viewModel.resumeOtaDownload() },
+                                onCancelDownload = { viewModel.cancelOtaDownload() },
+                                onRetryDownload = { viewModel.retryOtaDownload() },
+                                onInstallUpdate = { viewModel.installVerifiedUpdate() },
+                                onUpdateOtaSettings = { viewModel.updateOtaSettings(it) },
+                                onClearHistory = { viewModel.clearOtaHistory() },
                             )
                         }
                     }
@@ -445,6 +592,11 @@ private fun OwnerPinLockOverlay(
     var answerInput by remember { mutableStateOf("") }
     var newPinInput by remember { mutableStateOf("") }
 
+    BackHandler(enabled = recoveryMode) {
+        recoveryMode = false
+        errorMsg = null
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -452,21 +604,27 @@ private fun OwnerPinLockOverlay(
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
-        LuxGlassCard(modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth()) {
+        LuxGlassCard(
+            modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(),
+            highlightRedBorder = errorMsg != null,
+        ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(Icons.Rounded.Lock, contentDescription = null, tint = extras.accent, modifier = Modifier.size(44.dp))
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "HARDIK BUDS PRO",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                )
-                Text(
-                    text = if (ownerName.isNotBlank()) "Owner Lock · $ownerName" else "Enter $pinLength-Digit Security PIN",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                DotMatrixLogoMark(dotSize = 4.dp, animatePulse = true)
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Outlined.Lock, contentDescription = null, tint = extras.signalRed, modifier = Modifier.size(20.dp))
+                    Text(
+                        text = "HARDIK BUDS PRO",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                StatusBadgePill(
+                    label = if (ownerName.isNotBlank()) "OWNER LOCK · ${ownerName.uppercase()}" else "$pinLength-DIGIT SECURITY PIN",
+                    isRedActive = true,
                 )
                 Spacer(Modifier.height(16.dp))
 
@@ -486,11 +644,12 @@ private fun OwnerPinLockOverlay(
                     )
                     errorMsg?.let { err ->
                         Spacer(Modifier.height(6.dp))
-                        Text(err, color = StatusCritical, style = MaterialTheme.typography.bodySmall)
+                        Text(err, color = extras.signalRed, style = MaterialTheme.typography.bodySmall)
                     }
                     Spacer(Modifier.height(14.dp))
                     LuxActionButton(
                         text = "Unlock App",
+                        useRedAccent = true,
                         onClick = {
                             if (!onVerifyPin(pinInput)) {
                                 errorMsg = "Incorrect PIN. Please try again."
@@ -500,7 +659,7 @@ private fun OwnerPinLockOverlay(
                     )
                     if (recoveryQuestion.isNotBlank()) {
                         TextButton(onClick = { recoveryMode = true }) {
-                            Text("Forgot PIN? Recover")
+                            Text("FORGOT PIN? RECOVER", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 } else {
@@ -524,13 +683,14 @@ private fun OwnerPinLockOverlay(
                     )
                     errorMsg?.let { err ->
                         Spacer(Modifier.height(6.dp))
-                        Text(err, color = StatusCritical, style = MaterialTheme.typography.bodySmall)
+                        Text(err, color = extras.signalRed, style = MaterialTheme.typography.bodySmall)
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LuxActionButton(text = "Back", filled = false, onClick = { recoveryMode = false }, modifier = Modifier.weight(1f))
                         LuxActionButton(
                             text = "Reset PIN",
+                            useRedAccent = true,
                             onClick = {
                                 if (newPinInput.length != pinLength || !onRecoverPin(answerInput, newPinInput)) {
                                     errorMsg = "Incorrect recovery answer or invalid PIN"

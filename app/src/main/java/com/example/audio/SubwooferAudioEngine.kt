@@ -2,6 +2,8 @@ package com.example.audio
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
@@ -11,6 +13,7 @@ import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.Visualizer
 import android.os.Build
 import com.example.model.AudioEngineCapabilities
+import com.example.model.AudioOutputRoute
 import com.example.model.EqualizerProfile
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
@@ -59,7 +62,15 @@ class SubwooferAudioEngine(private val context: Context) {
     private val _soundTestRunning = MutableStateFlow<String?>(null)
     val soundTestRunning: StateFlow<String?> = _soundTestRunning.asStateFlow()
 
+    private val _audioOutputRoutes = MutableStateFlow<List<AudioOutputRoute>>(emptyList())
+    val audioOutputRoutes: StateFlow<List<AudioOutputRoute>> = _audioOutputRoutes.asStateFlow()
+
+    private val _smoothRampProgress = MutableStateFlow<Float?>(null)
+    val smoothRampProgress: StateFlow<Float?> = _smoothRampProgress.asStateFlow()
+
     private var pulseJob: Job? = null
+    private var smoothTransitionJob: Job? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
 
     fun initialize() {
         releaseEffects()
@@ -117,6 +128,21 @@ class SubwooferAudioEngine(private val context: Context) {
             }.getOrNull()
         } == true
 
+        val sampleRate = runCatching {
+            audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
+        }.getOrNull() ?: 48000
+
+        val routeLabel = runCatching {
+            val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val btOut = devices.firstOrNull {
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            }
+            btOut?.productName?.toString()?.takeIf { it.isNotBlank() }?.let { "Bluetooth · $it" }
+                ?: if (btOut != null) "Bluetooth A2DP Audio" else "Device Speaker / Wired"
+        }.getOrDefault("System Audio Out")
+
         _capabilities.value = AudioEngineCapabilities(
             equalizerSupported = eqOk && bandCount > 0,
             hardwareBandCount = bandCount,
@@ -127,6 +153,8 @@ class SubwooferAudioEngine(private val context: Context) {
             loudnessSupported = loudnessEnhancer != null,
             visualizerActive = false,
             activeAudioSessionId = attachedSession,
+            outputSampleRateHz = sampleRate,
+            outputRouteLabel = routeLabel,
             engineStatusMessage = sessionModeDesc,
             limitationNotice = if (attachedSession == 0) {
                 "Android AudioEffect processes media streams routed through the device audio HAL. Hardware-level ANC & vendor subwoofer chips remain controlled by OEM firmware."
@@ -135,7 +163,127 @@ class SubwooferAudioEngine(private val context: Context) {
             },
         )
 
+        registerAudioDeviceMonitor()
+        refreshAudioOutputRoutes()
         startReactiveEnergyMonitor()
+    }
+
+    private fun registerAudioDeviceMonitor() {
+        runCatching {
+            audioDeviceCallback?.let { audioManager.unregisterAudioDeviceCallback(it) }
+            val cb = object : AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                    refreshAudioOutputRoutes()
+                }
+
+                override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                    refreshAudioOutputRoutes()
+                }
+            }
+            audioDeviceCallback = cb
+            audioManager.registerAudioDeviceCallback(cb, null)
+        }
+    }
+
+    fun refreshAudioOutputRoutes() {
+        val routes = runCatching {
+            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).mapNotNull { info ->
+                val typeLabel = when (info.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
+                    AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER, AudioDeviceInfo.TYPE_BLE_BROADCAST -> "LE Audio"
+                    AudioDeviceInfo.TYPE_HDMI, AudioDeviceInfo.TYPE_HDMI_ARC, AudioDeviceInfo.TYPE_HDMI_EARC -> "HDMI / eARC"
+                    AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Audio / DAC"
+                    AudioDeviceInfo.TYPE_LINE_DIGITAL, AudioDeviceInfo.TYPE_LINE_ANALOG, AudioDeviceInfo.TYPE_AUX_LINE -> "Line Out / Optical"
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Audio"
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Device Speaker"
+                    else -> null
+                } ?: return@mapNotNull null
+
+                val name = info.productName?.toString()?.takeIf { it.isNotBlank() } ?: typeLabel
+                val maxCh = info.channelCounts.maxOrNull() ?: 2
+                val maxRate = info.sampleRates.maxOrNull() ?: 48000
+                val isTheatre = info.type == AudioDeviceInfo.TYPE_HDMI ||
+                    info.type == AudioDeviceInfo.TYPE_HDMI_ARC ||
+                    info.type == AudioDeviceInfo.TYPE_HDMI_EARC ||
+                    info.type == AudioDeviceInfo.TYPE_LINE_DIGITAL ||
+                    info.type == AudioDeviceInfo.TYPE_LINE_ANALOG ||
+                    info.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                    (info.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP && maxCh >= 2) ||
+                    info.type == AudioDeviceInfo.TYPE_USB_DEVICE
+
+                val isBt = info.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    info.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    info.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+
+                val macAddr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    runCatching { info.address.takeIf { it.isNotBlank() } }.getOrNull()
+                } else null
+
+                AudioOutputRoute(
+                    id = info.id,
+                    productName = name,
+                    typeLabel = typeLabel,
+                    address = macAddr,
+                    isBluetooth = isBt,
+                    isHomeTheatreCapable = isTheatre,
+                    maxChannels = maxCh,
+                    sampleRateLabel = "${maxRate / 1000} kHz",
+                )
+            }
+        }.getOrDefault(emptyList())
+        _audioOutputRoutes.value = routes
+
+        val primaryRoute = routes.firstOrNull { it.isBluetooth }
+            ?: routes.firstOrNull { it.typeLabel.contains("HDMI") || it.typeLabel.contains("USB") || it.typeLabel.contains("Line") }
+            ?: routes.firstOrNull()
+        if (primaryRoute != null) {
+            _capabilities.value = _capabilities.value.copy(
+                outputRouteLabel = "${primaryRoute.typeLabel} · ${primaryRoute.productName}",
+            )
+        }
+    }
+
+    fun runSmoothHomeTheatreTransition(
+        targetBassStrength: Int,
+        durationMs: Int,
+        enableRamp: Boolean,
+        onComplete: () -> Unit = {},
+    ) {
+        smoothTransitionJob?.cancel()
+        smoothTransitionJob = scope.launch {
+            if (!enableRamp || durationMs <= 100) {
+                _smoothRampProgress.value = 1f
+                delay(150L)
+                _smoothRampProgress.value = null
+                onComplete()
+                return@launch
+            }
+            val steps = 16
+            val stepDelay = (durationMs / steps).toLong().coerceAtLeast(35L)
+            val targetStr = (targetBassStrength.coerceIn(0, 100) * 10)
+            for (step in 1..steps) {
+                val frac = step.toFloat() / steps.toFloat()
+                // Smooth sine ease-in-out curve for glitch-free Home Theatre handoff
+                val eased = (0.5f * (1f - kotlin.math.cos(Math.PI * frac))).toFloat()
+                _smoothRampProgress.value = eased
+                runCatching {
+                    val bb = bassBoost
+                    if (bb != null && bb.strengthSupported) {
+                        bb.enabled = true
+                        bb.setStrength((targetStr * eased).roundToInt().toShort())
+                    }
+                    val loud = loudnessEnhancer
+                    if (loud != null) {
+                        loud.setTargetGain((350 * eased).roundToInt())
+                        loud.enabled = true
+                    }
+                }
+                delay(stepDelay)
+            }
+            _smoothRampProgress.value = null
+            refreshAudioOutputRoutes()
+            onComplete()
+        }
     }
 
     fun refreshPlaybackAndVolume() {
@@ -452,6 +600,8 @@ class SubwooferAudioEngine(private val context: Context) {
     fun releaseEffects() {
         pulseJob?.cancel()
         soundTestJob?.cancel()
+        smoothTransitionJob?.cancel()
+        runCatching { audioDeviceCallback?.let { audioManager.unregisterAudioDeviceCallback(it) } }
         runCatching { visualizer?.release() }
         runCatching { equalizer?.release() }
         runCatching { bassBoost?.release() }
@@ -459,6 +609,7 @@ class SubwooferAudioEngine(private val context: Context) {
             virtualizer?.let { it.javaClass.getMethod("release").invoke(it) }
         }
         runCatching { loudnessEnhancer?.release() }
+        audioDeviceCallback = null
         visualizer = null
         equalizer = null
         bassBoost = null

@@ -241,4 +241,17 @@ object DeviceCompatibilityEngine {
                 ),
             )
         }
+
+    fun isHomeTheatreDevice(deviceName: String?): Boolean {
+        val norm = deviceName?.lowercase()?.trim().orEmpty()
+        if (norm.isEmpty()) return false
+        val keywords = listOf(
+            "soundbar", "home theater", "home theatre", "cinema", "avr",
+            "receiver", "subwoofer", "bar ", "jbl bar", "ht-", "hw-",
+            "sonos", "bose smart", "aavante", "marshal", "jbl boombox",
+            "partybox", "tv", "theatre", "theater", "surround", "dolby",
+            "denon", "yamaha", "onkyo", "klipsch", "polk", "harman",
+        )
+        return keywords.any { norm.contains(it) }
+    }
 }

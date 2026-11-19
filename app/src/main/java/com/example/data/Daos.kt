@@ -71,3 +71,15 @@ interface SecurityAuditDao {
     @Query("DELETE FROM security_audit_logs")
     suspend fun clearAll()
 }
+
+@Dao
+interface UpdateHistoryDao {
+    @Query("SELECT * FROM update_history ORDER BY timestamp DESC LIMIT 30")
+    fun observeHistory(): Flow<List<UpdateHistoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entry: UpdateHistoryEntity)
+
+    @Query("DELETE FROM update_history")
+    suspend fun clearAll()
+}

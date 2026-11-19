@@ -50,3 +50,15 @@ data class SecurityAuditLogEntity(
     val detail: String,
     val timestamp: Long,
 )
+
+@Entity(tableName = "update_history")
+data class UpdateHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val versionName: String,
+    val releaseTitle: String,
+    val releaseDate: String,
+    val changelog: String,
+    val status: String,
+    val sha256: String? = null,
+    val timestamp: Long,
+)

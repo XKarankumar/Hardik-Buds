@@ -181,6 +181,9 @@ data class DiscoveredAudioDevice(
     val isA2dpConnected: Boolean = false,
     val isHeadsetConnected: Boolean = false,
     val isBleDevice: Boolean = false,
+    val isFastPairSupported: Boolean = false,
+    val fastPairModelId: String? = null,
+    val isHomeTheatreSpeaker: Boolean = false,
     val rssiDbm: Int? = null,
     val deviceClassMajor: Int? = null,
     val brand: EarbudBrand = EarbudBrand.GENERIC,
@@ -198,6 +201,30 @@ data class DiscoveredAudioDevice(
     val displayTitle: String
         get() = alias?.takeIf { it.isNotBlank() } ?: name.ifBlank { "Bluetooth Audio ($address)" }
 }
+
+@Immutable
+data class AudioOutputRoute(
+    val id: Int,
+    val productName: String,
+    val typeLabel: String,
+    val address: String? = null,
+    val isBluetooth: Boolean = false,
+    val isHomeTheatreCapable: Boolean = false,
+    val maxChannels: Int = 2,
+    val sampleRateLabel: String = "48 kHz",
+)
+
+@Immutable
+data class HomeTheatreSettings(
+    val smoothFadeHandoff: Boolean = true,
+    val autoCinemaSubwoofer: Boolean = true,
+    val lfeCrossoverHz: Int = 80,
+    val smoothTransitionMs: Int = 1200,
+    val preferredTheatreAddress: String? = null,
+    val preferredTheatreName: String? = null,
+    val theatreConnectedActive: Boolean = false,
+    val lastSmoothTransitionStatus: String = "Ready for smooth cinema audio handoff",
+)
 
 enum class AncMode(
     val title: String,
@@ -315,135 +342,143 @@ enum class AppThemeId(
     val darkSurfaceHex: Long,
     val lightBgHex: Long,
     val lightSurfaceHex: Long,
+    val prefersLightMode: Boolean = false,
 ) {
-    BLACK_TITANIUM(
-        displayName = "Black Titanium",
-        tagline = "Brushed Obsidian & Liquid Silver",
+    NOTHING_MONOCHROME(
+        displayName = "Nothing Monochrome",
+        tagline = "AMOLED Black · White · Signal Red",
+        primaryHex = 0xFFFFFFFF,
+        secondaryHex = 0xFFA1A1AA,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF000000,
+        darkSurfaceHex = 0xFF0C0C0E,
+        lightBgHex = 0xFFF7F7F8,
+        lightSurfaceHex = 0xFFFFFFFF,
+    ),
+    BLACK(
+        displayName = "Black",
+        tagline = "Pure Obsidian · Crisp White",
+        primaryHex = 0xFFF4F4F5,
+        secondaryHex = 0xFF71717A,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF000000,
+        darkSurfaceHex = 0xFF09090B,
+        lightBgHex = 0xFFF4F4F5,
+        lightSurfaceHex = 0xFFFFFFFF,
+    ),
+    WHITE(
+        displayName = "White",
+        tagline = "Minimal Paper · Ink · Signal Red",
+        primaryHex = 0xFF111113,
+        secondaryHex = 0xFF6B7280,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF0A0A0C,
+        darkSurfaceHex = 0xFF141418,
+        lightBgHex = 0xFFF6F6F7,
+        lightSurfaceHex = 0xFFFFFFFF,
+        prefersLightMode = true,
+    ),
+    RED(
+        displayName = "Red",
+        tagline = "Signal Red #FF3038 · Carbon Black",
+        primaryHex = 0xFFFF3038,
+        secondaryHex = 0xFFD4D4D8,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF050203,
+        darkSurfaceHex = 0xFF12090B,
+        lightBgHex = 0xFFFFF5F5,
+        lightSurfaceHex = 0xFFFFFFFF,
+    ),
+    TITANIUM(
+        displayName = "Titanium",
+        tagline = "Industrial Titanium · Chrome · Red Dot",
         primaryHex = 0xFFD8DFE9,
-        secondaryHex = 0xFF94A0B2,
-        accentHex = 0xFFE5ECF6,
-        darkBgHex = 0xFF0A0C10,
-        darkSurfaceHex = 0xFF141820,
-        lightBgHex = 0xFFF2F4F8,
+        secondaryHex = 0xFF8A94A6,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF07080A,
+        darkSurfaceHex = 0xFF12151B,
+        lightBgHex = 0xFFF1F3F6,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    MIDNIGHT_BLUE(
-        displayName = "Midnight Blue",
-        tagline = "Deep Sapphire & Platinum",
-        primaryHex = 0xFF7EB6FF,
-        secondaryHex = 0xFF5382C7,
-        accentHex = 0xFF9ED0FF,
-        darkBgHex = 0xFF070C17,
-        darkSurfaceHex = 0xFF10192B,
-        lightBgHex = 0xFFEEF3FB,
+    MIDNIGHT(
+        displayName = "Midnight",
+        tagline = "Deep Midnight Slate · Ice White",
+        primaryHex = 0xFFE2E8F0,
+        secondaryHex = 0xFF64748B,
+        accentHex = 0xFF7EB6FF,
+        darkBgHex = 0xFF04070F,
+        darkSurfaceHex = 0xFF0D1322,
+        lightBgHex = 0xFFEEF2F8,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    NEON_PURPLE(
-        displayName = "Neon Purple",
-        tagline = "Ultraviolet Pulse & Cyber Slate",
-        primaryHex = 0xFFC59BFF,
-        secondaryHex = 0xFF8C5CE6,
-        accentHex = 0xFFE0B8FF,
-        darkBgHex = 0xFF0B0714,
-        darkSurfaceHex = 0xFF171026,
-        lightBgHex = 0xFFF5F0FC,
+    SILVER(
+        displayName = "Silver",
+        tagline = "Brushed Silver · Graphite · Red Accent",
+        primaryHex = 0xFFE4E4E7,
+        secondaryHex = 0xFF9CA3AF,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF0B0C0E,
+        darkSurfaceHex = 0xFF17191E,
+        lightBgHex = 0xFFF3F4F6,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    LUXURY_GOLD(
-        displayName = "Luxury Gold",
-        tagline = "24K Champagne & Matte Onyx",
-        primaryHex = 0xFFE7C27D,
-        secondaryHex = 0xFFB8924C,
-        accentHex = 0xFFF7DC9F,
-        darkBgHex = 0xFF0C0A07,
-        darkSurfaceHex = 0xFF18140E,
-        lightBgHex = 0xFFFAF6EE,
+    NEON(
+        displayName = "Neon",
+        tagline = "Cyber Matrix · High-Contrast Pulse",
+        primaryHex = 0xFF00F0FF,
+        secondaryHex = 0xFFA1A1AA,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF020305,
+        darkSurfaceHex = 0xFF0B0E14,
+        lightBgHex = 0xFFEDF8FA,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    EMERALD_GREEN(
-        displayName = "Emerald Green",
-        tagline = "Racing Jade & Carbon Fiber",
-        primaryHex = 0xFF6FE3B2,
-        secondaryHex = 0xFF39A87D,
-        accentHex = 0xFF9EF5CF,
-        darkBgHex = 0xFF060E0B,
-        darkSurfaceHex = 0xFF0F1D17,
-        lightBgHex = 0xFFEDF8F3,
+    AMOLED(
+        displayName = "AMOLED",
+        tagline = "Zero-Pixel True Black · Ultra Battery",
+        primaryHex = 0xFFFFFFFF,
+        secondaryHex = 0xFF8E8E93,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF000000,
+        darkSurfaceHex = 0xFF000000,
+        lightBgHex = 0xFFFAFAFA,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    RED_PHANTOM(
-        displayName = "Red Phantom",
-        tagline = "Crimson Anodized & Gunmetal",
-        primaryHex = 0xFFFF7A85,
-        secondaryHex = 0xFFC94450,
-        accentHex = 0xFFFFA3AB,
-        darkBgHex = 0xFF11080A,
-        darkSurfaceHex = 0xFF1E1013,
-        lightBgHex = 0xFFFDF1F2,
+    CUSTOM(
+        displayName = "Custom",
+        tagline = "User Accent RGB & Custom Matrix",
+        primaryHex = 0xFFFFFFFF,
+        secondaryHex = 0xFFA1A1AA,
+        accentHex = 0xFFFF3038,
+        darkBgHex = 0xFF000000,
+        darkSurfaceHex = 0xFF0D0D10,
+        lightBgHex = 0xFFF5F5F7,
         lightSurfaceHex = 0xFFFFFFFF,
     ),
-    SILVER_CHROME(
-        displayName = "Silver Chrome",
-        tagline = "Mirror Alloy & Graphite",
-        primaryHex = 0xFFF0F4FA,
-        secondaryHex = 0xFFA6B1C2,
-        accentHex = 0xFFFFFFFF,
-        darkBgHex = 0xFF0E1014,
-        darkSurfaceHex = 0xFF1A1E25,
-        lightBgHex = 0xFFF5F7FA,
-        lightSurfaceHex = 0xFFFFFFFF,
-    ),
-    COSMIC_SPACE(
-        displayName = "Cosmic Space",
-        tagline = "Nebula Cyan & Deep Void",
-        primaryHex = 0xFF6AE4FF,
-        secondaryHex = 0xFF7B7EFF,
-        accentHex = 0xFFA8F1FF,
-        darkBgHex = 0xFF060812,
-        darkSurfaceHex = 0xFF101428,
-        lightBgHex = 0xFFEDF6FC,
-        lightSurfaceHex = 0xFFFFFFFF,
-    ),
-    SUNSET_AMBER(
-        displayName = "Sunset Amber",
-        tagline = "Molten Copper & Obsidian",
-        primaryHex = 0xFFFFAD66,
-        secondaryHex = 0xFFD97236,
-        accentHex = 0xFFFFCAA0,
-        darkBgHex = 0xFF110A06,
-        darkSurfaceHex = 0xFF1F140D,
-        lightBgHex = 0xFFFCF3EC,
-        lightSurfaceHex = 0xFFFFFFFF,
-    ),
-    ARCTIC_ICE(
-        displayName = "Arctic Ice",
-        tagline = "Glacier Titanium & Frosted Steel",
-        primaryHex = 0xFF9CE8FF,
-        secondaryHex = 0xFF5FAEC9,
-        accentHex = 0xFFC9F4FF,
-        darkBgHex = 0xFF070E12,
-        darkSurfaceHex = 0xFF101C24,
-        lightBgHex = 0xFFEEF8FC,
-        lightSurfaceHex = 0xFFFFFFFF,
-    ),
+}
+
+enum class DotMatrixStyle(val label: String) {
+    DOTO("Doto Matrix"),
+    DOT_GOTHIC("DotGothic 16"),
+    CLEAN_MONO("Clean Tech"),
 }
 
 enum class DarkModePreference(val label: String) {
-    DARK("Dark Luxury"),
-    LIGHT("Light Silver"),
-    SYSTEM("Follow System"),
+    DARK("AMOLED Dark"),
+    LIGHT("Minimal White"),
+    SYSTEM("System"),
 }
 
 enum class CardAppearance(val label: String) {
-    GLASS("Glassmorphic"),
-    TITANIUM("Brushed Titanium"),
-    MINIMAL("Minimal Flat"),
+    GLASS("Translucent Glass"),
+    TITANIUM("AMOLED Hairline"),
+    MINIMAL("Flat Matrix"),
 }
 
 enum class ButtonStyleOption(val label: String) {
-    PILL("Pill Luxury"),
-    SHARP("Precision Sharp"),
-    METALLIC("Metallic Outline"),
+    PILL("Pill"),
+    SHARP("Industrial"),
+    METALLIC("Outlined"),
 }
 
 enum class FontScaleOption(val label: String, val multiplier: Float) {
@@ -453,9 +488,9 @@ enum class FontScaleOption(val label: String, val multiplier: Float) {
 }
 
 enum class IconStyleOption(val label: String) {
-    FILLED("Filled"),
-    OUTLINED("Outlined"),
-    DUOTONE("Duotone"),
+    FILLED("Geometric Filled"),
+    OUTLINED("Minimal Line"),
+    DUOTONE("Monochrome"),
 }
 
 enum class AnimationSpeedOption(val label: String, val factor: Float) {
@@ -465,40 +500,83 @@ enum class AnimationSpeedOption(val label: String, val factor: Float) {
 }
 
 enum class BatteryRingStyle(val label: String) {
-    ORBITAL("Orbital Ring"),
-    ARC("Precision Arc"),
-    BAR("Titanium Bar"),
+    ORBITAL("Circular Ring"),
+    ARC("Dot Arc"),
+    BAR("Matrix Bar"),
 }
 
 enum class ConnectionAnimStyle(val label: String) {
-    SONIC_PULSE("Sonic Pulse"),
-    ORBIT_GLOW("Orbit Glow"),
-    MINIMAL("Minimal"),
+    SONIC_PULSE("Red Pulse"),
+    ORBIT_GLOW("Radar Orbit"),
+    MINIMAL("Minimal Dot"),
+}
+
+enum class AppLanguageOption(val label: String, val code: String) {
+    ENGLISH("English (Global)", "en"),
+    SYSTEM("Follow Device OS", "sys"),
+    HINDI("हिन्दी (Hindi Label)", "hi"),
+}
+
+enum class UiModeOption(
+    val label: String,
+    val badge: String,
+    val description: String,
+) {
+    STUDIO(
+        label = "Studio OS",
+        badge = "STUDIO",
+        description = "Full Nothing OS command dashboard with all DSP, Fast Pair & telemetry cards",
+    ),
+    MINIMAL_ZEN(
+        label = "Minimal Matrix",
+        badge = "MINIMAL",
+        description = "Clean AMOLED focus view with 3D earbuds visual, battery rings & quick ANC",
+    ),
+    PRO_TELEMETRY(
+        label = "Pro Telemetry HUD",
+        badge = "HUD",
+        description = "Live engineering readout with BT RSSI, audio session, sample rate & DSP status",
+    ),
+    THEATRE_AMBIENT(
+        label = "Theatre Cinema",
+        badge = "CINEMA",
+        description = "Spotlights Home Theatre Smooth Connect, LFE crossover & subwoofer wave",
+    ),
+    DRIVE_DOCK(
+        label = "Drive / Dock",
+        badge = "DOCK",
+        description = "Oversized high-contrast tactile controls for desk dock or travel",
+    ),
 }
 
 @Immutable
 data class CustomizationSettings(
-    val themeId: AppThemeId = AppThemeId.BLACK_TITANIUM,
+    val themeId: AppThemeId = AppThemeId.NOTHING_MONOCHROME,
     val darkMode: DarkModePreference = DarkModePreference.DARK,
+    val dotMatrixStyle: DotMatrixStyle = DotMatrixStyle.DOTO,
+    val uiMode: UiModeOption = UiModeOption.STUDIO,
     val customAccentEnabled: Boolean = false,
-    val customAccentRed: Int = 216,
-    val customAccentGreen: Int = 223,
-    val customAccentBlue: Int = 233,
+    val customAccentRed: Int = 255,
+    val customAccentGreen: Int = 48,
+    val customAccentBlue: Int = 56,
     val rgbCycleEnabled: Boolean = false,
     val cardAppearance: CardAppearance = CardAppearance.GLASS,
     val buttonStyle: ButtonStyleOption = ButtonStyleOption.PILL,
     val fontScale: FontScaleOption = FontScaleOption.STANDARD,
-    val iconStyle: IconStyleOption = IconStyleOption.FILLED,
+    val iconStyle: IconStyleOption = IconStyleOption.OUTLINED,
     val animationSpeed: AnimationSpeedOption = AnimationSpeedOption.SMOOTH_1X,
     val batteryRingStyle: BatteryRingStyle = BatteryRingStyle.ORBITAL,
     val connectionAnimStyle: ConnectionAnimStyle = ConnectionAnimStyle.SONIC_PULSE,
+    val hapticEnabled: Boolean = true,
     val customWallpaperUri: String? = null,
     val showQuickAncCard: Boolean = true,
     val showSubwooferCard: Boolean = true,
+    val showGamingCard: Boolean = true,
     val showCompatibilityCard: Boolean = true,
     val showFirmwareCard: Boolean = true,
     val showMiniVisualizerWidget: Boolean = true,
     val showBottomNavLabels: Boolean = true,
+    val language: AppLanguageOption = AppLanguageOption.ENGLISH,
 )
 
 @Immutable
@@ -506,6 +584,7 @@ data class SmartSettings(
     val autoReconnect: Boolean = true,
     val autoConnectLastDevice: Boolean = false,
     val connectionNotifications: Boolean = true,
+    val disconnectAlertNotifications: Boolean = true,
     val batteryAlertThreshold: Int = 20,
     val hearingProtectionEnabled: Boolean = true,
     val hearingWarningPercent: Int = 80,
@@ -542,6 +621,8 @@ data class AudioEngineCapabilities(
     val loudnessSupported: Boolean = false,
     val visualizerActive: Boolean = false,
     val activeAudioSessionId: Int = 0,
+    val outputSampleRateHz: Int = 48000,
+    val outputRouteLabel: String = "System Audio Out",
     val engineStatusMessage: String = "Initializing Android AudioEffect pipeline...",
     val limitationNotice: String = "Android audio effects apply to active app/session audio. System-wide global DSP requires OEM/OS support.",
 )

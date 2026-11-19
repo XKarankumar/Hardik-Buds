@@ -20,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.model.AnimationSpeedOption
@@ -29,13 +30,18 @@ import com.example.model.CardAppearance
 import com.example.model.ConnectionAnimStyle
 import com.example.model.CustomizationSettings
 import com.example.model.DarkModePreference
+import com.example.model.DotMatrixStyle
 import com.example.model.IconStyleOption
 
 @Immutable
 data class LuxThemeExtras(
     val isDark: Boolean,
     val accent: Color,
+    val signalRed: Color,
     val secondaryAccent: Color,
+    val dotMatrixFont: FontFamily,
+    val dotMatrixStyle: DotMatrixStyle,
+    val backgroundColor: Color,
     val backgroundBrush: Brush,
     val cardGradientBrush: Brush,
     val cardBorderColor: Color,
@@ -47,24 +53,30 @@ data class LuxThemeExtras(
     val animationSpeed: AnimationSpeedOption,
     val batteryRingStyle: BatteryRingStyle,
     val connectionAnimStyle: ConnectionAnimStyle,
+    val hapticEnabled: Boolean,
 )
 
 val LocalLuxThemeExtras = staticCompositionLocalOf {
     LuxThemeExtras(
         isDark = true,
-        accent = SilverChrome,
-        secondaryAccent = SilverMuted,
-        backgroundBrush = Brush.verticalGradient(listOf(TitaniumObsidian, TitaniumCharcoal)),
-        cardGradientBrush = Brush.linearGradient(listOf(TitaniumCharcoal, TitaniumElevated)),
-        cardBorderColor = TitaniumBorder,
+        accent = SignalRed,
+        signalRed = SignalRed,
+        secondaryAccent = NothingLightGray,
+        dotMatrixFont = DotoMatrixFamily,
+        dotMatrixStyle = DotMatrixStyle.DOTO,
+        backgroundColor = AmoledBlack,
+        backgroundBrush = Brush.verticalGradient(listOf(AmoledBlack, AmoledBlack)),
+        cardGradientBrush = Brush.linearGradient(listOf(NothingSurface, NothingSurface)),
+        cardBorderColor = NothingHairlineDark,
         cardCornerRadius = 22.dp,
         buttonCornerRadius = 28.dp,
         cardAppearance = CardAppearance.GLASS,
         buttonStyle = ButtonStyleOption.PILL,
-        iconStyle = IconStyleOption.FILLED,
+        iconStyle = IconStyleOption.OUTLINED,
         animationSpeed = AnimationSpeedOption.SMOOTH_1X,
         batteryRingStyle = BatteryRingStyle.ORBITAL,
         connectionAnimStyle = ConnectionAnimStyle.SONIC_PULSE,
+        hapticEnabled = true,
     )
 }
 
@@ -74,13 +86,13 @@ fun HardikBudsProTheme(
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
+    val themeSpec = customization.themeId
+
     val useDark = when (customization.darkMode) {
         DarkModePreference.DARK -> true
         DarkModePreference.LIGHT -> false
-        DarkModePreference.SYSTEM -> systemDark
+        DarkModePreference.SYSTEM -> if (themeSpec.prefersLightMode) false else systemDark
     }
-
-    val themeSpec = customization.themeId
 
     val rgbCycleHue = if (customization.rgbCycleEnabled &&
         customization.animationSpeed != AnimationSpeedOption.REDUCED
@@ -98,8 +110,8 @@ fun HardikBudsProTheme(
         hue
     } else null
 
-    val rawAccent = when {
-        rgbCycleHue != null -> Color.hsl(rgbCycleHue, 0.72f, if (useDark) 0.72f else 0.45f)
+    val resolvedAccentTarget = when {
+        rgbCycleHue != null -> Color.hsl(rgbCycleHue, 0.80f, if (useDark) 0.62f else 0.48f)
         customization.customAccentEnabled -> Color(
             red = customization.customAccentRed.coerceIn(0, 255) / 255f,
             green = customization.customAccentGreen.coerceIn(0, 255) / 255f,
@@ -108,114 +120,102 @@ fun HardikBudsProTheme(
         else -> Color(themeSpec.accentHex)
     }
 
-    val primaryColor by animateColorAsState(
-        targetValue = if (customization.customAccentEnabled || rgbCycleHue != null) {
-            rawAccent
-        } else {
-            if (useDark) Color(themeSpec.primaryHex) else darkenForLight(Color(themeSpec.primaryHex))
-        },
-        label = "primaryAnim",
-    )
-
+    val accentColor by animateColorAsState(targetValue = resolvedAccentTarget, label = "accentAnim")
     val secondaryColor by animateColorAsState(
-        targetValue = if (useDark) Color(themeSpec.secondaryHex) else darkenForLight(Color(themeSpec.secondaryHex)),
+        targetValue = if (useDark) Color(themeSpec.secondaryHex) else Color(0xFF52525B),
         label = "secondaryAnim",
     )
 
-    val bgTop = if (useDark) Color(themeSpec.darkBgHex) else Color(themeSpec.lightBgHex)
-    val surfaceBase = if (useDark) Color(themeSpec.darkSurfaceHex) else Color(themeSpec.lightSurfaceHex)
-    val surfaceVariant = if (useDark) surfaceBase.copy(alpha = 0.88f) else Color(0xFFE7ECF3)
-    val onBg = if (useDark) Color(0xFFF3F6FB) else Color(0xFF12161F)
-    val onBgMuted = if (useDark) Color(0xFF9AA5B8) else Color(0xFF4F596B)
+    val bgColor = if (useDark) Color(themeSpec.darkBgHex) else Color(themeSpec.lightBgHex)
+    val surfaceColor = if (useDark) Color(themeSpec.darkSurfaceHex) else Color(themeSpec.lightSurfaceHex)
+    val surfaceVariant = if (useDark) Color(0xFF141418) else Color(0xFFE4E4E7)
+    val onBg = if (useDark) Color(0xFFFFFFFF) else Color(0xFF09090B)
+    val onBgMuted = if (useDark) Color(0xFFA1A1AA) else Color(0xFF52525B)
+    val outlineHairline = if (useDark) Color(0xFF26262C) else Color(0xFFD4D4D8)
+
+    val primarySchemeColor = if (useDark) Color(themeSpec.primaryHex) else Color(0xFF111113)
 
     val colorScheme = if (useDark) {
         darkColorScheme(
-            primary = primaryColor,
-            onPrimary = Color(0xFF0A0C10),
-            primaryContainer = primaryColor.copy(alpha = 0.18f),
-            onPrimaryContainer = primaryColor,
+            primary = accentColor,
+            onPrimary = Color.White,
+            primaryContainer = accentColor.copy(alpha = 0.16f),
+            onPrimaryContainer = primarySchemeColor,
             secondary = secondaryColor,
-            onSecondary = Color(0xFF0A0C10),
-            secondaryContainer = surfaceBase,
+            onSecondary = Color.Black,
+            secondaryContainer = surfaceColor,
             onSecondaryContainer = onBg,
-            tertiary = rawAccent,
-            background = bgTop,
+            tertiary = accentColor,
+            background = bgColor,
             onBackground = onBg,
-            surface = surfaceBase,
+            surface = surfaceColor,
             onSurface = onBg,
             surfaceVariant = surfaceVariant,
             onSurfaceVariant = onBgMuted,
-            outline = if (useDark) Color(0xFF2D3646) else Color(0xFFCBD3E0),
-            error = StatusCritical,
+            outline = outlineHairline,
+            error = SignalRed,
         )
     } else {
         lightColorScheme(
-            primary = primaryColor,
+            primary = accentColor,
             onPrimary = Color.White,
-            primaryContainer = primaryColor.copy(alpha = 0.14f),
-            onPrimaryContainer = Color(0xFF12161F),
+            primaryContainer = accentColor.copy(alpha = 0.12f),
+            onPrimaryContainer = Color(0xFF09090B),
             secondary = secondaryColor,
             onSecondary = Color.White,
-            secondaryContainer = Color(0xFFE5EAF2),
-            onSecondaryContainer = Color(0xFF12161F),
-            tertiary = primaryColor,
-            background = bgTop,
+            secondaryContainer = Color(0xFFE4E4E7),
+            onSecondaryContainer = Color(0xFF09090B),
+            tertiary = accentColor,
+            background = bgColor,
             onBackground = onBg,
-            surface = surfaceBase,
+            surface = surfaceColor,
             onSurface = onBg,
             surfaceVariant = surfaceVariant,
             onSurfaceVariant = onBgMuted,
-            outline = Color(0xFFD0D8E4),
-            error = Color(0xFFD93848),
+            outline = outlineHairline,
+            error = SignalRed,
         )
     }
 
     val cardRadius = when (customization.cardAppearance) {
-        CardAppearance.GLASS -> 24.dp
-        CardAppearance.TITANIUM -> 18.dp
-        CardAppearance.MINIMAL -> 14.dp
+        CardAppearance.GLASS -> 22.dp
+        CardAppearance.TITANIUM -> 16.dp
+        CardAppearance.MINIMAL -> 12.dp
     }
 
     val buttonRadius = when (customization.buttonStyle) {
         ButtonStyleOption.PILL -> 28.dp
-        ButtonStyleOption.SHARP -> 10.dp
+        ButtonStyleOption.SHARP -> 8.dp
         ButtonStyleOption.METALLIC -> 18.dp
     }
 
-    val bgBrush = Brush.verticalGradient(
-        colors = listOf(
-            bgTop,
-            surfaceBase.copy(alpha = if (useDark) 0.96f else 0.72f),
-            bgTop,
-        ),
-    )
-
+    // Minimalist Nothing aesthetic: pure AMOLED flat or ultra-subtle translucent glass panels, no gaudy gradients
+    val bgBrush = Brush.verticalGradient(listOf(bgColor, bgColor))
     val cardBrush = when (customization.cardAppearance) {
         CardAppearance.GLASS -> Brush.linearGradient(
-            colors = listOf(
-                surfaceBase.copy(alpha = if (useDark) 0.76f else 0.88f),
-                surfaceBase.copy(alpha = if (useDark) 0.48f else 0.74f),
+            listOf(
+                surfaceColor.copy(alpha = if (useDark) 0.78f else 0.92f),
+                surfaceColor.copy(alpha = if (useDark) 0.62f else 0.84f),
             ),
         )
-        CardAppearance.TITANIUM -> Brush.linearGradient(
-            colors = listOf(
-                surfaceBase,
-                if (useDark) surfaceBase.copy(alpha = 0.85f).compositeOverBlack(0.06f) else Color(0xFFF6F8FC),
-            ),
-        )
-        CardAppearance.MINIMAL -> Brush.linearGradient(listOf(surfaceBase, surfaceBase))
+        CardAppearance.TITANIUM -> Brush.linearGradient(listOf(surfaceColor, surfaceColor))
+        CardAppearance.MINIMAL -> Brush.linearGradient(listOf(bgColor, bgColor))
     }
 
     val borderColor = when (customization.cardAppearance) {
-        CardAppearance.GLASS -> primaryColor.copy(alpha = if (useDark) 0.24f else 0.30f)
-        CardAppearance.TITANIUM -> if (useDark) Color(0xFF333C4D) else Color(0xFFCBD4E1)
-        CardAppearance.MINIMAL -> if (useDark) Color(0xFF222834) else Color(0xFFE0E6EF)
+        CardAppearance.GLASS -> if (useDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.10f)
+        CardAppearance.TITANIUM -> outlineHairline
+        CardAppearance.MINIMAL -> outlineHairline.copy(alpha = 0.7f)
     }
 
     val extras = LuxThemeExtras(
         isDark = useDark,
-        accent = primaryColor,
+        accent = accentColor,
+        signalRed = accentColor,
         secondaryAccent = secondaryColor,
+        dotMatrixFont = dotMatrixFamilyFor(customization.dotMatrixStyle),
+        dotMatrixStyle = customization.dotMatrixStyle,
+        backgroundColor = bgColor,
         backgroundBrush = bgBrush,
         cardGradientBrush = cardBrush,
         cardBorderColor = borderColor,
@@ -227,10 +227,11 @@ fun HardikBudsProTheme(
         animationSpeed = customization.animationSpeed,
         batteryRingStyle = customization.batteryRingStyle,
         connectionAnimStyle = customization.connectionAnimStyle,
+        hapticEnabled = customization.hapticEnabled,
     )
 
     val shapes = Shapes(
-        small = RoundedCornerShape(10.dp),
+        small = RoundedCornerShape(8.dp),
         medium = RoundedCornerShape(cardRadius),
         large = RoundedCornerShape(28.dp),
     )
@@ -238,26 +239,12 @@ fun HardikBudsProTheme(
     CompositionLocalProvider(LocalLuxThemeExtras provides extras) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = buildLuxuryTypography(customization.fontScale.multiplier),
+            typography = buildNothingTypography(
+                scale = customization.fontScale.multiplier,
+                dotStyle = customization.dotMatrixStyle,
+            ),
             shapes = shapes,
             content = content,
         )
     }
 }
-
-private fun darkenForLight(color: Color): Color {
-    // Ensure high contrast on light silver backgrounds
-    return Color(
-        red = (color.red * 0.52f).coerceIn(0.08f, 0.72f),
-        green = (color.green * 0.52f).coerceIn(0.08f, 0.72f),
-        blue = (color.blue * 0.52f).coerceIn(0.08f, 0.72f),
-        alpha = 1f,
-    )
-}
-
-private fun Color.compositeOverBlack(amount: Float): Color = Color(
-    red = (red * (1f - amount)).coerceIn(0f, 1f),
-    green = (green * (1f - amount)).coerceIn(0f, 1f),
-    blue = (blue * (1f - amount)).coerceIn(0f, 1f),
-    alpha = alpha,
-)

@@ -15,13 +15,20 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.companion.AssociationRequest
+import android.companion.BluetoothDeviceFilter
+import android.companion.BluetoothLeDeviceFilter
+import android.companion.CompanionDeviceManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.IntentSender
 import android.os.Build
+import android.os.ParcelUuid
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.example.R
@@ -50,6 +57,8 @@ class BluetoothController(private val context: Context) {
         private val UUID_DEVICE_INFO_SERVICE: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
         private val UUID_MODEL_NUMBER_CHAR: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
         private val UUID_FIRMWARE_REV_CHAR: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+        private val UUID_FAST_PAIR: UUID = UUID.fromString("0000fe2c-0000-1000-8000-00805f9b34fb")
+        private val PARCEL_UUID_FAST_PAIR: ParcelUuid = ParcelUuid(UUID_FAST_PAIR)
 
         const val CHANNEL_ALERTS = "hardik_buds_alerts"
         const val CHANNEL_MONITOR = "hardik_buds_monitor"
@@ -80,6 +89,12 @@ class BluetoothController(private val context: Context) {
     private val _nearbyDevices = MutableStateFlow<List<DiscoveredAudioDevice>>(emptyList())
     val nearbyDevices: StateFlow<List<DiscoveredAudioDevice>> = _nearbyDevices.asStateFlow()
 
+    private val _fastPairDevices = MutableStateFlow<List<DiscoveredAudioDevice>>(emptyList())
+    val fastPairDevices: StateFlow<List<DiscoveredAudioDevice>> = _fastPairDevices.asStateFlow()
+
+    private val _isFastPairScanning = MutableStateFlow(false)
+    val isFastPairScanning: StateFlow<Boolean> = _isFastPairScanning.asStateFlow()
+
     private val _activeDevice = MutableStateFlow<DiscoveredAudioDevice?>(null)
     val activeDevice: StateFlow<DiscoveredAudioDevice?> = _activeDevice.asStateFlow()
 
@@ -90,7 +105,9 @@ class BluetoothController(private val context: Context) {
     private val cachedGattFirmwareByAddress = mutableMapOf<String, String>()
     private val cachedGattModelByAddress = mutableMapOf<String, String>()
     private val cachedRssiByAddress = mutableMapOf<String, Int>()
+    private val customAliasByAddress = mutableMapOf<String, String>()
     private val nearbyMap = linkedMapOf<String, DiscoveredAudioDevice>()
+    private val fastPairMap = linkedMapOf<String, DiscoveredAudioDevice>()
 
     var onDeviceConnectedCallback: ((DiscoveredAudioDevice) -> Unit)? = null
     var onDeviceDisconnectedCallback: ((String) -> Unit)? = null
@@ -170,29 +187,51 @@ class BluetoothController(private val context: Context) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!PermissionManager.hasBluetoothConnectPermission(context)) return
             val dev = result.device ?: return
-            val name = result.scanRecord?.deviceName ?: runCatching { dev.name }.getOrNull()
-            // Filter out unnamed generic BLE beacons unless already bonded
+            val record = result.scanRecord
+            val fastPairBytes = record?.getServiceData(PARCEL_UUID_FAST_PAIR)
+            val serviceUuids = record?.serviceUuids.orEmpty()
+            val isFastPair = fastPairBytes != null || serviceUuids.any { it.uuid == UUID_FAST_PAIR }
+            val fastPairModel = when {
+                fastPairBytes != null && fastPairBytes.size == 3 ->
+                    fastPairBytes.joinToString("") { "%02X".format(it) }
+                fastPairBytes != null && fastPairBytes.isNotEmpty() ->
+                    "GFPS-${fastPairBytes.size}B"
+                isFastPair -> "FE2C"
+                else -> null
+            }
+
+            val rawName = record?.deviceName ?: runCatching { dev.name }.getOrNull()
             val isBonded = runCatching { dev.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false)
-            if (name.isNullOrBlank() && !isBonded) return
+            if (rawName.isNullOrBlank() && !isBonded && !isFastPair) return
+
+            val effectiveName = rawName?.takeIf { it.isNotBlank() }
+                ?: if (fastPairModel != null) "Fast Pair Audio ($fastPairModel)" else dev.address
 
             cachedRssiByAddress[dev.address] = result.rssi
             val brand = DeviceCompatibilityEngine.detectBrand(
-                deviceName = name,
+                deviceName = effectiveName,
                 address = dev.address,
-                manufacturerData = result.scanRecord?.manufacturerSpecificData,
-                serviceUuids = result.scanRecord?.serviceUuids,
+                manufacturerData = record?.manufacturerSpecificData,
+                serviceUuids = record?.serviceUuids,
             )
             val report = DeviceCompatibilityEngine.evaluateCompatibility(
                 brand = brand,
-                serviceUuids = result.scanRecord?.serviceUuids,
+                serviceUuids = record?.serviceUuids,
             )
             val mapped = mapBluetoothDevice(dev, isBle = true, rssi = result.rssi).copy(
-                name = name ?: dev.address,
+                name = effectiveName,
                 brand = brand,
                 compatibilityReport = report,
+                isFastPairSupported = isFastPair,
+                fastPairModelId = fastPairModel,
+                isHomeTheatreSpeaker = DeviceCompatibilityEngine.isHomeTheatreDevice(effectiveName),
             )
             nearbyMap[mapped.address] = mapped
             _nearbyDevices.value = nearbyMap.values.sortedByDescending { it.rssiDbm ?: -120 }
+            if (isFastPair) {
+                fastPairMap[mapped.address] = mapped
+                _fastPairDevices.value = fastPairMap.values.sortedByDescending { it.rssiDbm ?: -120 }
+            }
         }
     }
 
@@ -303,6 +342,103 @@ class BluetoothController(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    fun startGoogleFastPairScan() {
+        if (!PermissionManager.hasBluetoothScanPermission(context) ||
+            !PermissionManager.hasBluetoothConnectPermission(context)
+        ) {
+            _statusBanner.value = "Grant Bluetooth Scan & Connect permissions for Google Fast Connection."
+            return
+        }
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            _statusBanner.value = "Turn on Bluetooth to discover Google Fast Pair (0xFE2C) devices."
+            return
+        }
+
+        stopScan()
+        fastPairMap.clear()
+        _fastPairDevices.value = emptyList()
+        _isFastPairScanning.value = true
+        _isScanning.value = true
+        _statusBanner.value = "Scanning Google Fast Pair (0xFE2C) BLE peripherals..."
+
+        runCatching {
+            val fastPairFilter = ScanFilter.Builder()
+                .setServiceUuid(PARCEL_UUID_FAST_PAIR)
+                .build()
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build()
+            bleScanner?.startScan(listOf(fastPairFilter), settings, leScanCallback)
+        }.onFailure {
+            runCatching {
+                val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+                bleScanner?.startScan(null, settings, leScanCallback)
+            }
+        }
+
+        scanTimeoutJob = scope.launch {
+            delay(12_000L)
+            stopScan()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun requestCompanionFastPairing(
+        onChooserIntentReady: (IntentSender) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            onError("Companion Fast Pairing requires Android 8.0+ — opening Bluetooth pairing.")
+            PermissionManager.openBluetoothSettings(context)
+            return
+        }
+        val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager
+        if (cdm == null) {
+            onError("CompanionDeviceManager unavailable on this device.")
+            PermissionManager.openBluetoothSettings(context)
+            return
+        }
+
+        val bleFastPairFilter = BluetoothLeDeviceFilter.Builder()
+            .setScanFilter(ScanFilter.Builder().setServiceUuid(PARCEL_UUID_FAST_PAIR).build())
+            .build()
+        val classicAudioFilter = BluetoothDeviceFilter.Builder().build()
+
+        val request = AssociationRequest.Builder()
+            .addDeviceFilter(bleFastPairFilter)
+            .addDeviceFilter(classicAudioFilter)
+            .build()
+
+        val callback = object : CompanionDeviceManager.Callback() {
+            override fun onAssociationPending(intentSender: IntentSender) {
+                onChooserIntentReady(intentSender)
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onDeviceFound(chooserLauncher: IntentSender) {
+                onChooserIntentReady(chooserLauncher)
+            }
+
+            override fun onFailure(error: CharSequence?) {
+                val msg = error?.toString()?.takeIf { it.isNotBlank() }
+                    ?: "No Fast Pair audio device selected."
+                onError(msg)
+            }
+        }
+
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                cdm.associate(request, context.mainExecutor, callback)
+            } else {
+                cdm.associate(request, callback, null)
+            }
+        }.onFailure { err ->
+            onError(err.message ?: "Unable to open OS Fast Pair chooser.")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     fun stopScan() {
         scanTimeoutJob?.cancel()
         if (PermissionManager.hasBluetoothScanPermission(context)) {
@@ -310,6 +446,7 @@ class BluetoothController(private val context: Context) {
             runCatching { bluetoothAdapter?.cancelDiscovery() }
         }
         _isScanning.value = false
+        _isFastPairScanning.value = false
     }
 
     @SuppressLint("MissingPermission")
@@ -485,7 +622,7 @@ class BluetoothController(private val context: Context) {
         isHfp: Boolean = false,
     ): DiscoveredAudioDevice {
         val rawName = runCatching { device.name }.getOrNull().orEmpty()
-        val aliasName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val aliasName = customAliasByAddress[device.address] ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             runCatching { device.alias }.getOrNull()
         } else null
         val bonded = runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false)
@@ -522,6 +659,9 @@ class BluetoothController(private val context: Context) {
             serviceUuids = serviceUuids,
         )
 
+        val isFastPair = serviceUuids?.any { it.uuid == UUID_FAST_PAIR } == true
+        val isHomeTheatre = DeviceCompatibilityEngine.isHomeTheatreDevice(rawName)
+
         return DiscoveredAudioDevice(
             address = device.address,
             name = rawName.ifBlank { "Bluetooth Device" },
@@ -531,6 +671,9 @@ class BluetoothController(private val context: Context) {
             isA2dpConnected = isA2dp,
             isHeadsetConnected = isHfp,
             isBleDevice = isBle,
+            isFastPairSupported = isFastPair,
+            fastPairModelId = if (isFastPair) "FE2C" else null,
+            isHomeTheatreSpeaker = isHomeTheatre,
             rssiDbm = rssi,
             deviceClassMajor = runCatching { device.bluetoothClass?.majorDeviceClass }.getOrNull(),
             brand = brand,
@@ -573,6 +716,23 @@ class BluetoothController(private val context: Context) {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    fun renameDevice(address: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        customAliasByAddress[address] = trimmed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && PermissionManager.hasBluetoothConnectPermission(context)) {
+            runCatching {
+                bluetoothAdapter?.getRemoteDevice(address)?.setAlias(trimmed)
+            }
+        }
+        refreshBondedAndConnectedDevices()
+    }
+
+    fun seedCustomAliases(aliases: Map<String, String>) {
+        customAliasByAddress.putAll(aliases)
+    }
+
     fun clearBanner() {
         _statusBanner.value = null
     }
@@ -586,6 +746,7 @@ class BluetoothController(private val context: Context) {
         ensureNotificationChannels()
         val notif = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setColor(0xFFFF3038.toInt())
             .setContentTitle(title)
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)

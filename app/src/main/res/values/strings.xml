@@ -20,4 +20,6 @@
     <string name="monitor_channel_desc">Displays active Bluetooth earbuds status and battery alerts</string>
     <string name="alerts_channel_name">Battery &amp; Security Alerts</string>
     <string name="alerts_channel_desc">Notifies when earbuds connect, reach low battery, or an unrecognized device connects</string>
+    <string name="ota_channel_name">App Updates &amp; Downloads</string>
+    <string name="ota_channel_desc">Notifies when new Hardik Buds Pro releases are available, downloaded, or encounter errors</string>
 </resources>
