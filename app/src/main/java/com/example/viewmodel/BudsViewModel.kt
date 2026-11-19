@@ -31,12 +31,17 @@ import android.os.Build
 import com.example.model.AudioOutputRoute
 import com.example.model.CustomizationSettings
 import com.example.model.DiscoveredAudioDevice
+import com.example.model.DspConfig
+import com.example.model.DspLiveTelemetry
 import com.example.model.EarbudBrand
+import com.example.model.EqBandMode
 import com.example.model.EqualizerProfile
 import com.example.model.FirmwareCatalogEntry
 import com.example.model.FirmwareUpdateState
+import com.example.model.HeadphoneSoundProfile
 import com.example.model.HomeTheatreSettings
 import com.example.model.OwnerSecuritySettings
+import com.example.model.ParametricEqNode
 import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
@@ -115,6 +120,9 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     private val _customization = MutableStateFlow(CustomizationSettings())
     val customization: StateFlow<CustomizationSettings> = _customization.asStateFlow()
 
+    private val _dspConfig = MutableStateFlow(DspConfig())
+    val dspConfig: StateFlow<DspConfig> = _dspConfig.asStateFlow()
+
     val subwooferConfig: StateFlow<SubwooferConfig> = settingsRepo.subwooferConfigFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, SubwooferConfig())
 
@@ -160,6 +168,9 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
     val bluetoothBanner: StateFlow<String?> = bluetoothController.statusBanner
 
     val audioCapabilities: StateFlow<AudioEngineCapabilities> = audioEngine.capabilities
+    val dspTelemetry: StateFlow<DspLiveTelemetry> = audioEngine.dspTelemetry
+    val eqCurveDb: StateFlow<List<Float>> = audioEngine.eqCurveDb
+    val spectrumBands: StateFlow<List<Float>> = audioEngine.spectrumBands
     val audioOutputRoutes: StateFlow<List<AudioOutputRoute>> = audioEngine.audioOutputRoutes
     val smoothRampProgress: StateFlow<Float?> = audioEngine.smoothRampProgress
     val bassEnergy: StateFlow<Float> = audioEngine.bassEnergy
@@ -215,6 +226,10 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
             if (_customization.value == CustomizationSettings()) {
                 _customization.value = savedCustomization
             }
+            val savedDsp = settingsRepo.dspConfigFlow.first()
+            if (_dspConfig.value == DspConfig()) {
+                _dspConfig.value = savedDsp
+            }
             val savedOta = settingsRepo.otaSettingsFlow.first()
             if (_otaSettings.value == OtaSettings()) {
                 _otaSettings.value = savedOta
@@ -229,17 +244,19 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
             _isAppUnlocked.value = !(sec.pinEnabled && sec.lockAppOnLaunch && sec.pinHash.isNotBlank())
         }
 
-        // Keep audio DSP pipeline synchronized whenever subwoofer, EQ, or sound mode changes
+        // Keep audio DSP pipeline synchronized whenever DSP config, subwoofer, EQ, or sound mode changes
         viewModelScope.launch {
             combine(
+                _dspConfig,
                 subwooferConfig,
                 activeEqProfile,
                 activeSoundMode,
                 smartSettings,
-            ) { sub, eq, mode, smart ->
-                Quad(sub, eq, mode, smart)
-            }.collect { (sub, eq, mode, smart) ->
+            ) { dsp, sub, eq, mode, smart ->
+                Five(dsp, sub, eq, mode, smart)
+            }.collect { (dsp, sub, eq, mode, smart) ->
                 audioEngine.applyAudioPipeline(
+                    dspConfig = dsp,
                     subwoofer = sub,
                     eqProfile = eq,
                     soundMode = mode,
@@ -248,24 +265,48 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Sync firmware card with connected device
+        // Sync firmware card & auto-switch DSP profile if enabled
         viewModelScope.launch {
+            var lastHandledAddr: String? = null
             activeDevice.collect { dev ->
                 val brand = dev?.brand ?: EarbudBrand.GENERIC
                 _firmwareState.value = _firmwareState.value.copy(
                     connectedDeviceFirmware = dev?.firmwareRevision,
                     catalogEntry = lookupFirmwareCatalog(brand),
                 )
+                if (dev != null && dev.isConnected && dev.address != lastHandledAddr && _dspConfig.value.autoProfileSwitching) {
+                    lastHandledAddr = dev.address
+                    applyAutomaticDeviceProfile(dev)
+                }
             }
         }
     }
 
     private fun seedPresetsIfNeeded() {
         viewModelScope.launch {
-            if (db.eqProfileDao().countProfiles() == 0) {
-                db.eqProfileDao().insertAllIgnore(DefaultEqPresets.toEntities())
-            }
+            db.eqProfileDao().insertAllIgnore(DefaultEqPresets.toEntities())
         }
+    }
+
+    private suspend fun applyAutomaticDeviceProfile(dev: DiscoveredAudioDevice) {
+        val autoHp = when {
+            dev.isHomeTheatreSpeaker -> HeadphoneSoundProfile.REFERENCE_NEUTRAL
+            dev.brand in setOf(EarbudBrand.APPLE_AIRPODS, EarbudBrand.NOTHING) -> HeadphoneSoundProfile.OPEN_EAR_COMPENSATED
+            dev.brand in setOf(EarbudBrand.SONY, EarbudBrand.JBL, EarbudBrand.BOAT) -> HeadphoneSoundProfile.BASS_DRIVER_TUNED
+            else -> HeadphoneSoundProfile.IN_EAR_DYNAMIC
+        }
+        val targetEqId = when {
+            dev.isHomeTheatreSpeaker -> "preset_cinematic"
+            dev.brand == EarbudBrand.SONY -> "preset_studio"
+            dev.brand == EarbudBrand.APPLE_AIRPODS -> "preset_clarity"
+            else -> "preset_balanced"
+        }
+        val savedProfile = db.deviceProfileDao().getByAddress(dev.address)
+        val chosenEqId = eqProfiles.value.firstOrNull {
+            it.name.equals(savedProfile?.preferredSoundMode, ignoreCase = true) || it.id == targetEqId
+        }?.id ?: targetEqId
+        updateDspConfig { it.copy(headphoneProfile = autoHp) }
+        settingsRepo.setActiveEqId(chosenEqId)
     }
 
     fun refreshPermissions() {
@@ -504,17 +545,59 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrNull()
     }
 
-    // --- Subwoofer Engine X & EQ ---
-    fun updateSubwoofer(transform: (SubwooferConfig) -> SubwooferConfig) {
+    // --- Software DSP Engine, Subwoofer & Equalizer ---
+    fun updateDspConfig(transform: (DspConfig) -> DspConfig) {
+        val next = transform(_dspConfig.value)
+        _dspConfig.value = next
         viewModelScope.launch {
-            settingsRepo.updateSubwooferConfig(transform(subwooferConfig.value))
+            settingsRepo.updateDspConfig(next)
+        }
+    }
+
+    fun resetAllDspToDefaults() {
+        val defaults = DspConfig(eqBandMode = _dspConfig.value.eqBandMode)
+        _dspConfig.value = defaults
+        viewModelScope.launch {
+            settingsRepo.updateDspConfig(defaults)
+            settingsRepo.updateSubwooferConfig(SubwooferConfig())
+            settingsRepo.setActiveEqId("preset_balanced")
+            settingsRepo.setActiveSoundMode(SoundMode.MUSIC)
+            showToast("DSP Engine reset to flat reference defaults")
+        }
+    }
+
+    fun updateSubwoofer(transform: (SubwooferConfig) -> SubwooferConfig) {
+        val nextSub = transform(subwooferConfig.value)
+        updateDspConfig { d ->
+            d.copy(
+                bassEngineEnabled = nextSub.enabled,
+                deepBassPercent = nextSub.deepBass,
+                subBassPercent = nextSub.subwooferSimulation,
+                bassPunchPercent = nextSub.punchBass,
+                stereoBalance = nextSub.balance,
+                subCrossoverHz = nextSub.lowFreqCutoffHz.toFloat().coerceIn(20f, 200f),
+            )
+        }
+        viewModelScope.launch {
+            settingsRepo.updateSubwooferConfig(nextSub)
         }
     }
 
     fun resetSubwooferToDefaults() {
+        updateDspConfig {
+            it.copy(
+                bassEngineEnabled = true,
+                deepBassPercent = 55,
+                subBassPercent = 50,
+                bassPunchPercent = 45,
+                bassWarmthPercent = 40,
+                bassTexturePercent = 30,
+                subCrossoverHz = 95f,
+            )
+        }
         viewModelScope.launch {
             settingsRepo.updateSubwooferConfig(SubwooferConfig())
-            showToast("Subwoofer Engine X reset to default tuning")
+            showToast("Deep Bass & Subwoofer Engine reset to default")
         }
     }
 
@@ -576,37 +659,67 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
             settingsRepo.setPreferredAncMode(mode)
         }
         if (dev == null) {
-            showToast("Saved ${mode.title} preference. Connect earbuds to evaluate hardware protocol support.")
+            showToast("Saved ${mode.title} preference. Connect earbuds to check hardware ANC protocol availability.")
         } else if (!dev.compatibilityReport.supportsHardwareAncControl) {
-            showToast("${dev.brand.displayName} does not expose public ANC control APIs. Hardware ANC cannot be toggled without OEM protocol.")
+            showToast("${dev.displayTitle}: Earbud hardware ANC switching is not exposed via standard Bluetooth APIs.")
         }
     }
 
     fun selectEqPreset(profile: EqualizerProfile) {
+        updateDspConfig { it.copy(bands15Db = profile.resolved15Bands()) }
         viewModelScope.launch {
             settingsRepo.setActiveEqId(profile.id)
         }
     }
 
-    fun updateActiveEqBand(bandIndex: Int, valueDb: Float) {
+    fun updateActiveEqBand15(band15Index: Int, valueDb: Float) {
         val current = activeEqProfile.value
-        val updatedBands = current.bandsDb.toMutableList().apply {
-            if (bandIndex in indices) this[bandIndex] = valueDb.coerceIn(-12f, 12f)
+        val updated15 = current.resolved15Bands().toMutableList().apply {
+            if (band15Index in indices) this[band15Index] = valueDb.coerceIn(-12f, 12f)
         }
+        val updated10 = DspConfig.compress15To10(updated15)
+        updateDspConfig { it.copy(bands15Db = updated15) }
+        persistUpdatedEqBands(current, updated10, updated15)
+    }
+
+    fun updateActiveEqBand(bandIndex: Int, valueDb: Float) {
+        val mapped15Index = DspConfig.TEN_TO_FIFTEEN_INDICES.getOrNull(bandIndex)
+        if (mapped15Index != null) {
+            updateActiveEqBand15(mapped15Index, valueDb)
+        }
+    }
+
+    private fun persistUpdatedEqBands(
+        current: EqualizerProfile,
+        updated10: List<Float>,
+        updated15: List<Float>,
+    ) {
         viewModelScope.launch {
             if (current.isBuiltIn && current.id != "preset_custom") {
                 val customProfile = EqualizerProfile(
                     id = "preset_custom",
                     name = "Custom",
-                    bandsDb = updatedBands,
+                    bandsDb = updated10,
+                    bands15Db = updated15,
                     subwooferBoost = current.subwooferBoost,
                     isBuiltIn = true,
                 )
                 db.eqProfileDao().upsert(customProfile.toEntity())
                 settingsRepo.setActiveEqId("preset_custom")
             } else {
-                db.eqProfileDao().upsert(current.copy(bandsDb = updatedBands).toEntity())
+                db.eqProfileDao().upsert(
+                    current.copy(bandsDb = updated10, bands15Db = updated15).toEntity(),
+                )
             }
+        }
+    }
+
+    fun updateParametricNode(nodeId: Int, transform: (ParametricEqNode) -> ParametricEqNode) {
+        updateDspConfig { cfg ->
+            val updated = cfg.parametricNodes.map { node ->
+                if (node.id == nodeId) transform(node) else node
+            }
+            cfg.copy(parametricNodes = updated)
         }
     }
 
@@ -614,11 +727,13 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
         val base = activeEqProfile.value
+        val cur15 = base.resolved15Bands()
         val newProfile = EqualizerProfile(
             id = "custom_${UUID.randomUUID().toString().take(8)}",
             name = trimmed,
-            bandsDb = base.bandsDb,
-            subwooferBoost = subwooferConfig.value.bassIntensity,
+            bandsDb = DspConfig.compress15To10(cur15),
+            bands15Db = cur15,
+            subwooferBoost = _dspConfig.value.deepBassPercent,
             isBuiltIn = false,
         )
         viewModelScope.launch {
@@ -669,7 +784,7 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Sound Tests & Find Earbuds ---
     fun runSoundTest(type: AcousticTestType) {
-        audioEngine.runAcousticSoundTest(type, subwooferConfig.value.balance)
+        audioEngine.runAcousticSoundTest(type)
     }
 
     fun stopSoundTest() = audioEngine.stopSoundTest()
@@ -680,7 +795,7 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
             showToast("Connect your earbuds first so audio routes to them for the acoustic finder chime.")
             return
         }
-        audioEngine.runAcousticSoundTest(AcousticTestType.FIND_EARBUDS_CHIME, 0f)
+        audioEngine.runAcousticSoundTest(AcousticTestType.FIND_EARBUDS_CHIME)
         showToast("Playing high-clarity acoustic finder chime to ${dev.displayTitle}")
     }
 
@@ -1000,6 +1115,9 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
                 if (_otaSettings.value.notificationsEnabled) {
                     OtaNotificationHelper.notifyUpdateAvailable(appContext, latest)
                 }
+                if (_otaSettings.value.autoDownloadEnabled) {
+                    startOtaDownload()
+                }
                 if (userInitiated) {
                     showToast("New ${settings.channel.label} v${latest.versionName} available")
                 }
@@ -1120,6 +1238,16 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         showToast("Update download cancelled")
     }
 
+    fun checkUpdatesOnForeground() {
+        val settings = _otaSettings.value
+        if (!settings.autoCheckOnLaunch || !settings.backgroundCheckEnabled) return
+        val lastChecked = settings.lastCheckedTimestamp ?: 0L
+        val elapsed = System.currentTimeMillis() - lastChecked
+        if (elapsed >= 6L * 3600L * 1000L) {
+            checkForAppUpdates(userInitiated = false)
+        }
+    }
+
     fun retryOtaDownload() {
         val release = _otaUiState.value.latestRelease
         if (release == null) {
@@ -1187,6 +1315,7 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resetAllSettings() {
         _customization.value = CustomizationSettings()
+        _dspConfig.value = DspConfig()
         _otaSettings.value = OtaSettings()
         otaDownloader.cancelDownload()
         viewModelScope.launch {
@@ -1218,5 +1347,5 @@ class BudsViewModel(application: Application) : AndroidViewModel(application) {
         bluetoothController.release()
     }
 
-    private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
+    private data class Five<A, B, C, D, E>(val a: A, val b: B, val c: C, val d: D, val e: E)
 }

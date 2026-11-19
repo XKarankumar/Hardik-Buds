@@ -506,6 +506,12 @@ fun SettingsScreen(
                 SettingsSwitchRow("Update Notifications", otaSettings.notificationsEnabled) { v ->
                     onUpdateOtaSettings { it.copy(notificationsEnabled = v) }
                 }
+                SettingsSwitchRow("Auto-Download New Updates", otaSettings.autoDownloadEnabled) { v ->
+                    onUpdateOtaSettings { it.copy(autoDownloadEnabled = v) }
+                }
+                SettingsSwitchRow("Download over Mobile Data", otaSettings.downloadOverMobileData) { v ->
+                    onUpdateOtaSettings { it.copy(downloadOverMobileData = v) }
+                }
                 Spacer(Modifier.height(6.dp))
                 Text("UPDATE CHANNEL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -572,7 +578,7 @@ fun SettingsScreen(
                     )
                     firmwareState.catalogEntry?.let { entry ->
                         LuxActionButton(
-                            text = "OEM Support",
+                            text = "Device Guide",
                             icon = Icons.Outlined.OpenInNew,
                             filled = false,
                             onClick = {

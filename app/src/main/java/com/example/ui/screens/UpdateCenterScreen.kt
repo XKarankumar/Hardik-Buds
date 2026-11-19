@@ -426,12 +426,13 @@ fun UpdateCenterScreen(
         }
 
         // 3. Error Handling Card (Hinglish/English + Retry + Settings)
-        AnimatedVisibility(visible = activeError != null) {
-            activeError?.let { err ->
-                LuxGlassCard(
-                    modifier = Modifier.fillMaxWidth().testTag("ota_error_card"),
-                    highlightRedBorder = true,
-                ) {
+        item {
+            AnimatedVisibility(visible = activeError != null) {
+                activeError?.let { err ->
+                    LuxGlassCard(
+                        modifier = Modifier.fillMaxWidth().testTag("ota_error_card"),
+                        highlightRedBorder = true,
+                    ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Outlined.ErrorOutline,
@@ -476,6 +477,7 @@ fun UpdateCenterScreen(
                         }
                     }
                 }
+            }
             }
         }
 

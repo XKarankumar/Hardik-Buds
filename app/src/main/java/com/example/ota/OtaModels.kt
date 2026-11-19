@@ -18,11 +18,14 @@ enum class OtaCheckFrequencyHours(val label: String, val hours: Long) {
 data class OtaSettings(
     val githubOwner: String = "XKarankumar",
     val githubRepo: String = "Hardik-Buds",
+    val versionJsonUrl: String = "",
     val autoCheckOnLaunch: Boolean = true,
     val backgroundCheckEnabled: Boolean = true,
     val checkFrequency: OtaCheckFrequencyHours = OtaCheckFrequencyHours.HOURS_24,
     val channel: OtaChannel = OtaChannel.STABLE,
     val notificationsEnabled: Boolean = true,
+    val autoDownloadEnabled: Boolean = false,
+    val downloadOverMobileData: Boolean = true,
     val lastCheckedTimestamp: Long? = null,
     val lastKnownLatestVersion: String? = null,
     val expectedSha256Override: String = "",
@@ -99,6 +102,8 @@ data class GitHubReleaseInfo(
     val apkDownloadUrl: String?,
     val apkSizeBytes: Long,
     val expectedSha256: String? = null,
+    val mandatoryUpdate: Boolean = false,
+    val minimumSupportedVersion: Long = 1L,
 )
 
 enum class OtaCheckStatus {

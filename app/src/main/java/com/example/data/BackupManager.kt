@@ -38,12 +38,15 @@ object BackupManager {
 
     fun exportEqProfileJson(profile: EqualizerProfile): String {
         val obj = JSONObject()
-        obj.put("format", "hardik_buds_pro_eq_v1")
+        obj.put("format", "hardik_buds_pro_eq_v2")
         obj.put("name", profile.name)
         obj.put("subwooferBoost", profile.subwooferBoost)
-        val arr = JSONArray()
-        profile.bandsDb.forEach { arr.put(it.toDouble()) }
-        obj.put("bandsDb", arr)
+        val arr10 = JSONArray()
+        profile.resolved10Bands().forEach { arr10.put(it.toDouble()) }
+        obj.put("bandsDb", arr10)
+        val arr15 = JSONArray()
+        profile.resolved15Bands().forEach { arr15.put(it.toDouble()) }
+        obj.put("bands15Db", arr15)
         return obj.toString(2)
     }
 
@@ -51,14 +54,28 @@ object BackupManager {
         val obj = JSONObject(jsonText.trim())
         val name = obj.optString("name", "Imported Profile").ifBlank { "Imported Profile" }
         val boost = obj.optInt("subwooferBoost", 50).coerceIn(0, 100)
-        val arr = obj.getJSONArray("bandsDb")
-        val bands = (0 until 10).map { idx ->
-            if (idx < arr.length()) arr.getDouble(idx).toFloat().coerceIn(-12f, 12f) else 0f
+        val arr10 = obj.optJSONArray("bandsDb") ?: JSONArray()
+        val arr15 = obj.optJSONArray("bands15Db")
+
+        val bands15 = if (arr15 != null && arr15.length() >= 15) {
+            (0 until 15).map { idx -> arr15.getDouble(idx).toFloat().coerceIn(-12f, 12f) }
+        } else {
+            val b10 = (0 until 10).map { idx ->
+                if (idx < arr10.length()) arr10.getDouble(idx).toFloat().coerceIn(-12f, 12f) else 0f
+            }
+            com.example.model.DspConfig.expand10To15(b10)
         }
+        val bands10 = if (arr10.length() >= 10) {
+            (0 until 10).map { idx -> arr10.getDouble(idx).toFloat().coerceIn(-12f, 12f) }
+        } else {
+            com.example.model.DspConfig.compress15To10(bands15)
+        }
+
         EqualizerProfile(
             id = "custom_${UUID.randomUUID().toString().take(8)}",
             name = name,
-            bandsDb = bands,
+            bandsDb = bands10,
+            bands15Db = bands15,
             subwooferBoost = boost,
             isBuiltIn = false,
         )

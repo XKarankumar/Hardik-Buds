@@ -474,7 +474,7 @@ fun HomeScreen(
                         )
                         QuickStudioTile(
                             title = "EQUALIZER",
-                            value = "10-BAND DSP",
+                            value = "15-BAND DSP",
                             icon = Icons.Outlined.Equalizer,
                             isActive = true,
                             onClick = { onNavigateToSoundTab(0) },
@@ -668,11 +668,7 @@ fun HomeScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("SUBWOOFER ENGINE X", style = MaterialTheme.typography.titleLarge)
                             Text(
-                                text = if (audioCapabilities.bassBoostSupported) {
-                                    "BASSBOOST DSP · ${subwoofer.bassIntensity}% · ${subwoofer.lowFreqCutoffHz}Hz"
-                                } else {
-                                    "EQ SUB-BASS SHAPING · ${subwoofer.bassIntensity}%"
-                                },
+                                text = "SOFT + HAL BASS DSP · ${subwoofer.bassIntensity}% · ${subwoofer.lowFreqCutoffHz}Hz",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

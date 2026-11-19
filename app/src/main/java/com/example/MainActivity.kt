@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         budsViewModel.refreshPermissions()
         budsViewModel.refreshInstallPermissionState()
+        budsViewModel.checkUpdatesOnForeground()
         budsViewModel.bluetoothController.refreshBondedAndConnectedDevices()
         budsViewModel.audioEngine.refreshPlaybackAndVolume()
     }

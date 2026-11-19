@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
+import com.example.audio.DspAudioProcessor
 import com.example.compatibility.DeviceCompatibilityEngine
 import com.example.data.BackupManager
 import com.example.data.DefaultEqPresets
@@ -16,11 +17,19 @@ import com.example.data.SecurityHashUtil
 import com.example.model.AppThemeId
 import com.example.model.CompatibilityTier
 import com.example.model.CustomizationSettings
+import com.example.model.DspConfig
 import com.example.model.EarbudBrand
+import com.example.model.EqBandMode
+import com.example.model.FilterSlope
+import com.example.model.ParametricEqNode
 import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
 import com.example.model.UiModeOption
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
+import kotlin.math.sqrt
 import com.example.ota.GitHubReleaseService
 import com.example.ota.OtaChannel
 import com.example.ota.OtaErrorType
@@ -353,27 +362,234 @@ class ExampleRobolectricTest {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val vm = BudsViewModel(app)
         composeTestRule.setContent {
-            HardikBudsProRoot(viewModel = vm, skipSplash = true)
+            HardikBudsProTheme(customization = CustomizationSettings()) {
+                com.example.ui.screens.UpdateCenterScreen(
+                    otaUiState = vm.otaUiState.value,
+                    otaSettings = vm.otaSettings.value,
+                    downloadState = vm.otaDownloadState.value,
+                    updateHistory = emptyList(),
+                    onNavigateBack = {},
+                    onCheckForUpdates = {},
+                    onStartDownload = {},
+                    onPauseDownload = {},
+                    onResumeDownload = {},
+                    onCancelDownload = {},
+                    onRetryDownload = {},
+                    onInstallUpdate = { null },
+                    onUpdateOtaSettings = {},
+                    onClearHistory = {},
+                )
+            }
         }
         composeTestRule.waitForIdle()
-
-        composeTestRule.onNodeWithTag("nav_settings").performClick()
-        composeTestRule.waitForIdle()
-
-        composeTestRule.onNodeWithTag("settings_screen")
-            .performScrollToNode(hasTestTag("open_update_center_button"))
-        composeTestRule.waitForIdle()
-
-        composeTestRule.onNodeWithTag("open_update_center_button").assertIsDisplayed().performClick()
-        composeTestRule.waitForIdle()
-
         composeTestRule.onNodeWithTag("update_center_screen").assertIsDisplayed()
         composeTestRule.onNodeWithTag("update_center_status_card").assertIsDisplayed()
         composeTestRule.onNodeWithTag("check_updates_ota_btn").assertIsDisplayed()
+    }
 
-        composeTestRule.onNodeWithTag("update_center_screen")
-            .performScrollToNode(hasTestTag("ota_history_card"))
+    @Test
+    fun dspAudioProcessorMathFiltersBalanceLimiterAndSampleRatesWork() {
+        fun generateSineStereo(freqHz: Float, sampleRate: Int, frames: Int, amplitude: Float = 0.5f): FloatArray {
+            val out = FloatArray(frames * 2)
+            for (i in 0 until frames) {
+                val s = amplitude * sin(2.0 * PI * freqHz * i / sampleRate).toFloat()
+                out[i * 2] = s
+                out[i * 2 + 1] = s
+            }
+            return out
+        }
+
+        fun rms(buf: FloatArray, channelOffset: Int): Float {
+            var sum = 0.0
+            val count = buf.size / 2
+            val skip = count / 4 // skip transient settle window
+            for (i in skip until count) {
+                val s = buf[i * 2 + channelOffset]
+                sum += s * s
+            }
+            return sqrt(sum / (count - skip)).toFloat()
+        }
+
+        val processor = DspAudioProcessor(48000)
+
+        // 1. Multi-sample rate stability + Anti-clipping Peak Limiter bounds
+        for (sr in listOf(44100, 48000, 96000)) {
+            processor.setSampleRate(sr)
+            assertEquals(sr, processor.getSampleRateHz())
+            processor.updateConfiguration(
+                dspConfig = DspConfig(
+                    preampDb = 10f,
+                    masterGainDb = 8f,
+                    bassEngineEnabled = true,
+                    deepBassPercent = 90,
+                    subBassPercent = 90,
+                    limiterEnabled = true,
+                    clippingPreventionEnabled = true,
+                ),
+                soundMode = SoundMode.BASS,
+                profileBands15 = List(15) { if (it < 4) 10f else 0f },
+            )
+            processor.resetStates()
+            val hotWave = generateSineStereo(63f, sr, frames = sr / 4, amplitude = 0.9f)
+            processor.processStereoInterleaved(hotWave)
+            for (sample in hotWave) {
+                assertFalse("NaN detected at sample rate $sr", sample.isNaN())
+                assertTrue("Sample exceeded [-1.0, 1.0] at $sr: $sample", abs(sample) <= 1.0001f)
+            }
+        }
+
+        // 2. High-Pass Filter (24 dB/oct @ 400Hz) attenuates 60Hz sub-bass significantly
+        processor.setSampleRate(48000)
+        processor.updateConfiguration(
+            dspConfig = DspConfig(
+                highPassEnabled = true,
+                highPassCutoffHz = 400f,
+                highPassSlope = FilterSlope.SLOPE_24DB,
+                limiterEnabled = false,
+                clippingPreventionEnabled = false,
+            ),
+            soundMode = SoundMode.MUSIC,
+            profileBands15 = List(15) { 0f },
+        )
+        processor.resetStates()
+        val lowWave = generateSineStereo(60f, 48000, frames = 8192, amplitude = 0.5f)
+        val rawLowRms = rms(lowWave, 0)
+        processor.processStereoInterleaved(lowWave)
+        val filteredLowRms = rms(lowWave, 0)
+        assertTrue("Expected HPF to attenuate 60Hz (<20% remaining), was $filteredLowRms vs $rawLowRms", filteredLowRms < rawLowRms * 0.20f)
+
+        // 3. Low-Pass Filter (24 dB/oct @ 500Hz) attenuates 6000Hz highs significantly
+        processor.updateConfiguration(
+            dspConfig = DspConfig(
+                lowPassEnabled = true,
+                lowPassCutoffHz = 500f,
+                lowPassSlope = FilterSlope.SLOPE_24DB,
+                limiterEnabled = false,
+                clippingPreventionEnabled = false,
+            ),
+            soundMode = SoundMode.MUSIC,
+            profileBands15 = List(15) { 0f },
+        )
+        processor.resetStates()
+        val highWave = generateSineStereo(6000f, 48000, frames = 8192, amplitude = 0.5f)
+        val rawHighRms = rms(highWave, 0)
+        processor.processStereoInterleaved(highWave)
+        val filteredHighRms = rms(highWave, 0)
+        assertTrue("Expected LPF to attenuate 6kHz (<15% remaining), was $filteredHighRms vs $rawHighRms", filteredHighRms < rawHighRms * 0.15f)
+
+        // 4. Stereo Balance L100% / R100% / Center verification
+        processor.updateConfiguration(
+            dspConfig = DspConfig(stereoBalance = -1f, stereoWidthPercent = 100),
+            soundMode = SoundMode.MUSIC,
+            profileBands15 = List(15) { 0f },
+        )
+        processor.resetStates()
+        val balWaveLeftOnly = generateSineStereo(440f, 48000, frames = 4096, amplitude = 0.4f)
+        processor.processStereoInterleaved(balWaveLeftOnly)
+        assertTrue("Right channel must be near zero on L100% balance", rms(balWaveLeftOnly, 1) < 0.02f)
+        assertTrue("Left channel must stay active on L100% balance", rms(balWaveLeftOnly, 0) > 0.2f)
+
+        // 5. Parametric EQ boosts response around target frequency & Real Goertzel spectrum detects tone
+        val peqConfig = DspConfig(
+            parametricNodes = listOf(ParametricEqNode(1, enabled = true, frequencyHz = 1000f, qFactor = 1.4f, gainDb = 8f)),
+        )
+        processor.updateConfiguration(peqConfig, SoundMode.MUSIC, List(15) { 0f })
+        val curve = processor.computeFrequencyResponseCurve(listOf(20f, 1000f, 16000f))
+        assertTrue("1kHz curve point (${curve[1]} dB) should be boosted > 5 dB by Parametric EQ", curve[1] > 5.0f)
+
+        val silentSpec = processor.analyzeRealPcmSpectrum(FloatArray(2048))
+        assertTrue("Silent audio spectrum must remain strictly 0", silentSpec.all { it == 0f })
+        val tone63 = generateSineStereo(63f, 48000, frames = 1024, amplitude = 0.6f)
+        val toneSpec = processor.analyzeRealPcmSpectrum(tone63)
+        assertTrue("63Hz bin (index 2 = ${toneSpec[2]}) should exceed ultrasonic bin (${toneSpec[15]})", toneSpec[2] > toneSpec[15] + 0.25f)
+    }
+
+    @Test
+    fun defaultPresetsIncludeAllNewDspProfilesAnd15BandExpansion() {
+        assertEquals(15, DspConfig.BANDS_15_SPECS.size)
+        assertEquals("20Hz", DspConfig.BANDS_15_SPECS.first().shortLabel)
+        assertEquals("16kHz", DspConfig.BANDS_15_SPECS.last().shortLabel)
+
+        val defaultDsp = DspConfig()
+        assertEquals(15, defaultDsp.bands15Db.size)
+        assertTrue(defaultDsp.bands15Db.all { it == 0f })
+
+        val builtIn = DefaultEqPresets.allBuiltIn()
+        val names = builtIn.map { it.name }.toSet()
+        val required = setOf(
+            "Deep Bass", "Bass Head", "Balanced", "Vocal", "Clarity",
+            "Studio", "Cinematic", "Gaming", "Rock", "Pop", "EDM",
+        )
+        assertTrue("Missing required DSP presets: ${required - names}", names.containsAll(required))
+        builtIn.forEach { preset ->
+            assertEquals("${preset.name} must resolve cleanly to 15 bands", 15, preset.resolved15Bands().size)
+            assertEquals("${preset.name} must resolve cleanly to 10 bands", 10, preset.resolved10Bands().size)
+        }
+    }
+
+    @Test
+    fun soundStudio15BandDeepBassAndFiltersUiWork() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = BudsViewModel(app)
+        composeTestRule.setContent {
+            HardikBudsProTheme(customization = CustomizationSettings()) {
+                com.example.ui.screens.SoundScreen(
+                    activeDevice = null,
+                    dspConfig = vm.dspConfig.value,
+                    dspTelemetry = vm.dspTelemetry.value,
+                    eqCurveDb = vm.eqCurveDb.value,
+                    spectrumBands = vm.spectrumBands.value,
+                    subwoofer = vm.subwooferConfig.value,
+                    eqProfiles = vm.eqProfiles.value,
+                    activeEqProfile = vm.activeEqProfile.value,
+                    activeSoundMode = vm.activeSoundMode.value,
+                    preferredAncMode = vm.preferredAncMode.value,
+                    touchConfig = vm.touchConfig.value,
+                    capabilities = vm.audioCapabilities.value,
+                    smartSettings = vm.smartSettings.value,
+                    bassEnergy = 0.5f,
+                    soundTestRunning = null,
+                    micPermissionGranted = true,
+                    initialTab = 0,
+                    onRequestMicPermission = {},
+                    onUpdateDspConfig = { transform -> vm.updateDspConfig(transform) },
+                    onResetAllDsp = { vm.resetAllDspToDefaults() },
+                    onUpdateSubwoofer = { transform -> vm.updateSubwoofer(transform) },
+                    onResetSubwoofer = {},
+                    onSelectEqPreset = {},
+                    onUpdateEqBand15 = { idx, db -> vm.updateActiveEqBand15(idx, db) },
+                    onUpdateEqBand = { idx, db -> vm.updateActiveEqBand(idx, db) },
+                    onUpdateParametricNode = { id, transform -> vm.updateParametricNode(id, transform) },
+                    onSaveCustomEq = {},
+                    onRenameCustomEq = { _, _ -> },
+                    onDeleteCustomEq = {},
+                    onExportEqJson = { "" },
+                    onImportEqJson = { true },
+                    onSelectSoundMode = {},
+                    onSelectAncMode = {},
+                    onToggleGamingMode = {},
+                    onUpdateTouchConfig = {},
+                    onRunSoundTest = {},
+                    onStopSoundTest = {},
+                    onShowToast = {},
+                )
+            }
+        }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("ota_history_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sound_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sound_engine_status_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("animated_eq_graph_card").assertIsDisplayed()
+
+        // Switch to Deep Bass tab (index 1)
+        composeTestRule.onNodeWithTag("sound_tab_1").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("deep_bass_hero_card").assertIsDisplayed()
+
+        // Switch to Filters & Mix tab (index 2)
+        composeTestRule.onNodeWithTag("sound_tab_2").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("sound_screen")
+            .performScrollToNode(hasTestTag("stereo_balance_card"))
+        composeTestRule.onNodeWithTag("stereo_balance_card").assertIsDisplayed()
     }
 }

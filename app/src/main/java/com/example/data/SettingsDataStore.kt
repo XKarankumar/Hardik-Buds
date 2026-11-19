@@ -29,11 +29,18 @@ import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
 import com.example.model.UiModeOption
+import com.example.model.DspConfig
+import com.example.model.EqBandMode
+import com.example.model.FilterSlope
+import com.example.model.HeadphoneSoundProfile
+import com.example.model.ParametricEqNode
 import com.example.ota.OtaChannel
 import com.example.ota.OtaCheckFrequencyHours
 import com.example.ota.OtaSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 
 private val Context.budsDataStore: DataStore<Preferences> by preferencesDataStore(name = "hardik_buds_pro_prefs")
 
@@ -135,6 +142,35 @@ class SettingsRepository(private val context: Context) {
         val OTA_LAST_CHECKED = longPreferencesKey("ota_last_checked")
         val OTA_LAST_VERSION = stringPreferencesKey("ota_last_version")
         val OTA_SHA256_OVERRIDE = stringPreferencesKey("ota_sha256_override")
+
+        // Real Software DSP Engine Configuration
+        val DSP_EQ_BAND_MODE = stringPreferencesKey("dsp_eq_band_mode")
+        val DSP_BANDS_15_CSV = stringPreferencesKey("dsp_bands_15_csv")
+        val DSP_PARAMETRIC_JSON = stringPreferencesKey("dsp_parametric_json")
+        val DSP_BASS_ENABLED = booleanPreferencesKey("dsp_bass_enabled")
+        val DSP_DEEP_BASS = intPreferencesKey("dsp_deep_bass")
+        val DSP_SUB_BASS = intPreferencesKey("dsp_sub_bass")
+        val DSP_BASS_PUNCH = intPreferencesKey("dsp_bass_punch")
+        val DSP_BASS_WARMTH = intPreferencesKey("dsp_bass_warmth")
+        val DSP_BASS_TEXTURE = intPreferencesKey("dsp_bass_texture")
+        val DSP_SUB_CROSSOVER_HZ = floatPreferencesKey("dsp_sub_crossover_hz")
+        val DSP_HPF_ENABLED = booleanPreferencesKey("dsp_hpf_enabled")
+        val DSP_HPF_CUTOFF_HZ = floatPreferencesKey("dsp_hpf_cutoff_hz")
+        val DSP_HPF_SLOPE = stringPreferencesKey("dsp_hpf_slope")
+        val DSP_LPF_ENABLED = booleanPreferencesKey("dsp_lpf_enabled")
+        val DSP_LPF_CUTOFF_HZ = floatPreferencesKey("dsp_lpf_cutoff_hz")
+        val DSP_LPF_SLOPE = stringPreferencesKey("dsp_lpf_slope")
+        val DSP_STEREO_BALANCE = floatPreferencesKey("dsp_stereo_balance")
+        val DSP_LEFT_TRIM_DB = floatPreferencesKey("dsp_left_trim_db")
+        val DSP_RIGHT_TRIM_DB = floatPreferencesKey("dsp_right_trim_db")
+        val DSP_STEREO_WIDTH_PCT = intPreferencesKey("dsp_stereo_width_pct")
+        val DSP_PREAMP_DB = floatPreferencesKey("dsp_preamp_db")
+        val DSP_MASTER_GAIN_DB = floatPreferencesKey("dsp_master_gain_db")
+        val DSP_LIMITER_ENABLED = booleanPreferencesKey("dsp_limiter_enabled")
+        val DSP_CLIPPING_PREV = booleanPreferencesKey("dsp_clipping_prev")
+        val DSP_VOL_NORM = booleanPreferencesKey("dsp_vol_norm")
+        val DSP_HEADPHONE_PROFILE = stringPreferencesKey("dsp_headphone_profile")
+        val DSP_AUTO_SWITCH = booleanPreferencesKey("dsp_auto_switch")
     }
 
     val customizationFlow: Flow<CustomizationSettings> = context.budsDataStore.data.map { p ->
@@ -260,6 +296,46 @@ class SettingsRepository(private val context: Context) {
             lastCheckedTimestamp = p[Keys.OTA_LAST_CHECKED],
             lastKnownLatestVersion = p[Keys.OTA_LAST_VERSION],
             expectedSha256Override = p[Keys.OTA_SHA256_OVERRIDE] ?: "",
+        )
+    }
+
+    val dspConfigFlow: Flow<DspConfig> = context.budsDataStore.data.map { p ->
+        val raw15 = p[Keys.DSP_BANDS_15_CSV]
+            ?.split(",")
+            ?.mapNotNull { it.trim().toFloatOrNull() }
+            ?.take(15)
+        val bands15 = if (raw15 != null && raw15.size == 15) raw15 else List(15) { 0f }
+
+        val peq = parseParametricNodes(p[Keys.DSP_PARAMETRIC_JSON])
+
+        DspConfig(
+            eqBandMode = enumOrDefault(p[Keys.DSP_EQ_BAND_MODE], EqBandMode.BANDS_15),
+            bands15Db = bands15,
+            parametricNodes = peq,
+            bassEngineEnabled = p[Keys.DSP_BASS_ENABLED] ?: (p[Keys.SUB_ENABLED] ?: true),
+            deepBassPercent = p[Keys.DSP_DEEP_BASS] ?: (p[Keys.SUB_DEEP] ?: 55),
+            subBassPercent = p[Keys.DSP_SUB_BASS] ?: 50,
+            bassPunchPercent = p[Keys.DSP_BASS_PUNCH] ?: (p[Keys.SUB_PUNCH] ?: 45),
+            bassWarmthPercent = p[Keys.DSP_BASS_WARMTH] ?: 40,
+            bassTexturePercent = p[Keys.DSP_BASS_TEXTURE] ?: 30,
+            subCrossoverHz = p[Keys.DSP_SUB_CROSSOVER_HZ] ?: 95f,
+            highPassEnabled = p[Keys.DSP_HPF_ENABLED] ?: false,
+            highPassCutoffHz = p[Keys.DSP_HPF_CUTOFF_HZ] ?: 30f,
+            highPassSlope = enumOrDefault(p[Keys.DSP_HPF_SLOPE], FilterSlope.SLOPE_12DB),
+            lowPassEnabled = p[Keys.DSP_LPF_ENABLED] ?: false,
+            lowPassCutoffHz = p[Keys.DSP_LPF_CUTOFF_HZ] ?: 18000f,
+            lowPassSlope = enumOrDefault(p[Keys.DSP_LPF_SLOPE], FilterSlope.SLOPE_12DB),
+            stereoBalance = p[Keys.DSP_STEREO_BALANCE] ?: (p[Keys.SUB_BALANCE] ?: 0f),
+            leftChannelGainDb = p[Keys.DSP_LEFT_TRIM_DB] ?: 0f,
+            rightChannelGainDb = p[Keys.DSP_RIGHT_TRIM_DB] ?: 0f,
+            stereoWidthPercent = p[Keys.DSP_STEREO_WIDTH_PCT] ?: 100,
+            preampDb = p[Keys.DSP_PREAMP_DB] ?: 0f,
+            masterGainDb = p[Keys.DSP_MASTER_GAIN_DB] ?: 0f,
+            limiterEnabled = p[Keys.DSP_LIMITER_ENABLED] ?: true,
+            clippingPreventionEnabled = p[Keys.DSP_CLIPPING_PREV] ?: true,
+            volumeNormalizationEnabled = p[Keys.DSP_VOL_NORM] ?: false,
+            headphoneProfile = enumOrDefault(p[Keys.DSP_HEADPHONE_PROFILE], HeadphoneSoundProfile.REFERENCE_NEUTRAL),
+            autoProfileSwitching = p[Keys.DSP_AUTO_SWITCH] ?: false,
         )
     }
 
@@ -413,6 +489,77 @@ class SettingsRepository(private val context: Context) {
             }
             p[Keys.OTA_SHA256_OVERRIDE] = o.expectedSha256Override.trim().lowercase()
         }
+    }
+
+    suspend fun updateDspConfig(d: DspConfig) {
+        context.budsDataStore.edit { p ->
+            p[Keys.DSP_EQ_BAND_MODE] = d.eqBandMode.name
+            p[Keys.DSP_BANDS_15_CSV] = d.bands15Db.joinToString(",")
+            p[Keys.DSP_PARAMETRIC_JSON] = encodeParametricNodes(d.parametricNodes)
+            p[Keys.DSP_BASS_ENABLED] = d.bassEngineEnabled
+            p[Keys.DSP_DEEP_BASS] = d.deepBassPercent
+            p[Keys.DSP_SUB_BASS] = d.subBassPercent
+            p[Keys.DSP_BASS_PUNCH] = d.bassPunchPercent
+            p[Keys.DSP_BASS_WARMTH] = d.bassWarmthPercent
+            p[Keys.DSP_BASS_TEXTURE] = d.bassTexturePercent
+            p[Keys.DSP_SUB_CROSSOVER_HZ] = d.subCrossoverHz
+            p[Keys.DSP_HPF_ENABLED] = d.highPassEnabled
+            p[Keys.DSP_HPF_CUTOFF_HZ] = d.highPassCutoffHz
+            p[Keys.DSP_HPF_SLOPE] = d.highPassSlope.name
+            p[Keys.DSP_LPF_ENABLED] = d.lowPassEnabled
+            p[Keys.DSP_LPF_CUTOFF_HZ] = d.lowPassCutoffHz
+            p[Keys.DSP_LPF_SLOPE] = d.lowPassSlope.name
+            p[Keys.DSP_STEREO_BALANCE] = d.stereoBalance
+            p[Keys.DSP_LEFT_TRIM_DB] = d.leftChannelGainDb
+            p[Keys.DSP_RIGHT_TRIM_DB] = d.rightChannelGainDb
+            p[Keys.DSP_STEREO_WIDTH_PCT] = d.stereoWidthPercent
+            p[Keys.DSP_PREAMP_DB] = d.preampDb
+            p[Keys.DSP_MASTER_GAIN_DB] = d.masterGainDb
+            p[Keys.DSP_LIMITER_ENABLED] = d.limiterEnabled
+            p[Keys.DSP_CLIPPING_PREV] = d.clippingPreventionEnabled
+            p[Keys.DSP_VOL_NORM] = d.volumeNormalizationEnabled
+            p[Keys.DSP_HEADPHONE_PROFILE] = d.headphoneProfile.name
+            p[Keys.DSP_AUTO_SWITCH] = d.autoProfileSwitching
+        }
+    }
+
+    private fun parseParametricNodes(raw: String?): List<ParametricEqNode> {
+        if (raw.isNullOrBlank()) return DspConfig.defaultParametricNodes()
+        return runCatching {
+            val arr = JSONArray(raw)
+            val list = mutableListOf<ParametricEqNode>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(
+                    ParametricEqNode(
+                        id = obj.optInt("id", i + 1),
+                        enabled = obj.optBoolean("enabled", false),
+                        frequencyHz = obj.optDouble("freq", 1000.0).toFloat().coerceIn(20f, 20000f),
+                        qFactor = obj.optDouble("q", 1.4).toFloat().coerceIn(0.3f, 10f),
+                        gainDb = obj.optDouble("gain", 0.0).toFloat().coerceIn(-12f, 12f),
+                        label = obj.optString("label", "PEQ ${i + 1}"),
+                    ),
+                )
+            }
+            if (list.isEmpty()) DspConfig.defaultParametricNodes() else list
+        }.getOrDefault(DspConfig.defaultParametricNodes())
+    }
+
+    private fun encodeParametricNodes(nodes: List<ParametricEqNode>): String {
+        val arr = JSONArray()
+        nodes.forEach { n ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", n.id)
+                    put("enabled", n.enabled)
+                    put("freq", n.frequencyHz.toDouble())
+                    put("q", n.qFactor.toDouble())
+                    put("gain", n.gainDb.toDouble())
+                    put("label", n.label)
+                },
+            )
+        }
+        return arr.toString()
     }
 
     suspend fun resetAllPreferences() {

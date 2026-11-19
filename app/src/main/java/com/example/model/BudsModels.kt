@@ -293,12 +293,19 @@ data class SubwooferConfig(
 data class EqualizerProfile(
     val id: String,
     val name: String,
-    val bandsDb: List<Float>, // 10 bands: 31, 62, 125, 250, 500, 1k, 2k, 4k, 8k, 16k (-12f..+12f)
+    val bandsDb: List<Float>, // 10 bands: 31, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k (-12f..+12f)
+    val bands15Db: List<Float> = DspConfig.expand10To15(bandsDb),
     val subwooferBoost: Int = 50,
     val isBuiltIn: Boolean = false,
 ) {
+    fun resolved15Bands(): List<Float> =
+        if (bands15Db.size == 15) bands15Db else DspConfig.expand10To15(bandsDb)
+
+    fun resolved10Bands(): List<Float> =
+        if (bandsDb.size == 10) bandsDb else DspConfig.compress15To10(bands15Db)
+
     companion object {
-        val BAND_LABELS = listOf("31Hz", "62Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz")
+        val BAND_LABELS = listOf("31Hz", "63Hz", "125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz", "8kHz", "16kHz")
     }
 }
 
@@ -613,6 +620,7 @@ data class OwnerSecuritySettings(
 @Immutable
 data class AudioEngineCapabilities(
     val equalizerSupported: Boolean = false,
+    val dynamicsProcessingSupported: Boolean = false,
     val hardwareBandCount: Int = 0,
     val hardwareMinDb: Float = -12f,
     val hardwareMaxDb: Float = 12f,
@@ -623,8 +631,8 @@ data class AudioEngineCapabilities(
     val activeAudioSessionId: Int = 0,
     val outputSampleRateHz: Int = 48000,
     val outputRouteLabel: String = "System Audio Out",
-    val engineStatusMessage: String = "Initializing Android AudioEffect pipeline...",
-    val limitationNotice: String = "Android audio effects apply to active app/session audio. System-wide global DSP requires OEM/OS support.",
+    val engineStatusMessage: String = "Initializing Software PCM & Android AudioEffect DSP...",
+    val limitationNotice: String = "Software PCM DSP processes internal streams; Android AudioEffect applies to supported system media streams.",
 )
 
 @Immutable

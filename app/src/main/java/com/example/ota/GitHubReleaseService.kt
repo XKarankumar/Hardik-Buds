@@ -250,6 +250,10 @@ class GitHubReleaseService(
                     }
                 }
 
+                val isMandatory = body.contains("mandatoryUpdate: true", ignoreCase = true) ||
+                    body.contains("mandatory: true", ignoreCase = true) ||
+                    body.contains("critical: true", ignoreCase = true)
+
                 releases.add(
                     GitHubReleaseInfo(
                         tagName = tagName,
@@ -263,6 +267,8 @@ class GitHubReleaseService(
                         apkDownloadUrl = chosenApkUrl,
                         apkSizeBytes = chosenApkSize,
                         expectedSha256 = SemVerComparator.extractSha256FromText(body),
+                        mandatoryUpdate = isMandatory,
+                        minimumSupportedVersion = if (isMandatory) 2L else 1L,
                     ),
                 )
             }

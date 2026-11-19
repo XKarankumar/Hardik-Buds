@@ -153,9 +153,9 @@ object DeviceCompatibilityEngine {
                 detail = "Full stereo playback, call routing, AVRCP media commands, and RSSI monitoring.",
             ),
             FeatureSupportItem(
-                featureName = "Subwoofer Engine X & 10-Band EQ",
-                supportLevel = FeatureSupportLevel.ANDROID_DSP_ONLY,
-                detail = "Powered by Android AudioEffect (Equalizer, BassBoost, Virtualizer, LoudnessEnhancer) on active audio session.",
+                featureName = "15-Band & Parametric Software DSP Engine",
+                supportLevel = FeatureSupportLevel.SUPPORTED,
+                detail = "Real-time biquad EQ, Deep Bass shaping, HPF/LPF filters, L/R balance & Limiter via Android AudioEffect & internal PCM DSP.",
             ),
             FeatureSupportItem(
                 featureName = "Battery Telemetry (Main / L / R / Case)",
@@ -168,22 +168,18 @@ object DeviceCompatibilityEngine {
                     hasUntetheredBattery -> "Untethered Left, Right & Case battery exposed via Android Metadata / Fast Pair."
                     hasGattBatteryService -> "BLE GATT Battery Service (0x180F) detected."
                     hasBatteryData -> "Overall Bluetooth HFP battery level reported by OS."
-                    else -> "Displays live battery only when exposed by hardware via HFP/GATT/Metadata."
+                    else -> "Displays live battery when exposed by hardware via HFP, GATT, or Android Metadata."
                 },
             ),
             FeatureSupportItem(
-                featureName = "Hardware ANC & Transparency Switching",
+                featureName = "Earbud Hardware ANC & Transparency",
                 supportLevel = FeatureSupportLevel.PROPRIETARY_UNAVAILABLE,
-                detail = if (brand.companionPackageHint != null) {
-                    "${brand.displayName} encrypts or restricts native ANC RFCOMM/GATT commands to its OEM companion protocol. No fake ANC activation is performed."
-                } else {
-                    "Requires manufacturer-specific GATT/RFCOMM ANC protocol not exposed by standard Bluetooth profiles."
-                },
+                detail = "Active Noise Cancellation switching runs exclusively inside earbud microphone DSP firmware when exposed over standard Bluetooth protocols.",
             ),
             FeatureSupportItem(
-                featureName = "Hardware Touch Gesture Remapping",
+                featureName = "Hardware Touch Gesture Storage",
                 supportLevel = FeatureSupportLevel.PROPRIETARY_UNAVAILABLE,
-                detail = "${brand.displayName} touch mapping is stored in vendor firmware EEPROM and requires OEM protocol access.",
+                detail = "Touch preferences are stored locally in app profile; hardware button EEPROM remapping requires manufacturer firmware support.",
             ),
             FeatureSupportItem(
                 featureName = "BLE Firmware Revision Readout (0x2A26)",
@@ -202,11 +198,11 @@ object DeviceCompatibilityEngine {
 
         val notice = when (tier) {
             CompatibilityTier.TIER_1_STANDARD ->
-                "Tier 1 Standard: Audio, EQ DSP, and Bluetooth connection controls are active. Proprietary ANC & touch remapping are disabled because hardware does not expose public protocols."
+                "Tier 1 Standard: Full Software & AudioEffect DSP (15-band EQ, Deep Bass, HPF/LPF, Balance) and Bluetooth audio controls active."
             CompatibilityTier.TIER_2_ENHANCED ->
-                "Tier 2 Enhanced (${brand.displayName}): Supports Android DSP EQ, Subwoofer Engine X, and OS battery reporting where exposed."
+                "Tier 2 Enhanced (${brand.displayName}): Supports real Android AudioEffect DSP, Software PCM Engine, and OS battery telemetry."
             CompatibilityTier.TIER_3_PROPRIETARY ->
-                "Tier 3 Extended (${brand.displayName}): Enhanced telemetry detected. Proprietary ANC/Touch controls remain honestly gated unless exposed by OEM API."
+                "Tier 3 Extended (${brand.displayName}): Full Software DSP + enhanced Bluetooth/Fast Pair battery & GATT Device Info telemetry."
         }
 
         return DeviceCompatibilityReport(

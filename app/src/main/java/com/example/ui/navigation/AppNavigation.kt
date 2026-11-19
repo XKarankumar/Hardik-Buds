@@ -217,6 +217,10 @@ private fun MainAdaptiveShell(
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val permissions by viewModel.permissionsSnapshot.collectAsStateWithLifecycle()
     val subwoofer by viewModel.subwooferConfig.collectAsStateWithLifecycle()
+    val dspConfig by viewModel.dspConfig.collectAsStateWithLifecycle()
+    val dspTelemetry by viewModel.dspTelemetry.collectAsStateWithLifecycle()
+    val eqCurveDb by viewModel.eqCurveDb.collectAsStateWithLifecycle()
+    val spectrumBands by viewModel.spectrumBands.collectAsStateWithLifecycle()
     val eqProfiles by viewModel.eqProfiles.collectAsStateWithLifecycle()
     val activeEqProfile by viewModel.activeEqProfile.collectAsStateWithLifecycle()
     val soundMode by viewModel.activeSoundMode.collectAsStateWithLifecycle()
@@ -437,6 +441,10 @@ private fun MainAdaptiveShell(
                         composable(BudsRoutes.ROUTE_SOUND) {
                             SoundScreen(
                                 activeDevice = activeDevice,
+                                dspConfig = dspConfig,
+                                dspTelemetry = dspTelemetry,
+                                eqCurveDb = eqCurveDb,
+                                spectrumBands = spectrumBands,
                                 subwoofer = subwoofer,
                                 eqProfiles = eqProfiles,
                                 activeEqProfile = activeEqProfile,
@@ -452,10 +460,14 @@ private fun MainAdaptiveShell(
                                 onRequestMicPermission = {
                                     permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                                 },
+                                onUpdateDspConfig = { viewModel.updateDspConfig(it) },
+                                onResetAllDsp = { viewModel.resetAllDspToDefaults() },
                                 onUpdateSubwoofer = { viewModel.updateSubwoofer(it) },
                                 onResetSubwoofer = { viewModel.resetSubwooferToDefaults() },
                                 onSelectEqPreset = { viewModel.selectEqPreset(it) },
+                                onUpdateEqBand15 = { idx, db -> viewModel.updateActiveEqBand15(idx, db) },
                                 onUpdateEqBand = { idx, db -> viewModel.updateActiveEqBand(idx, db) },
+                                onUpdateParametricNode = { nodeId, transform -> viewModel.updateParametricNode(nodeId, transform) },
                                 onSaveCustomEq = { viewModel.saveCustomEqProfile(it) },
                                 onRenameCustomEq = { id, newName -> viewModel.renameCustomEqProfile(id, newName) },
                                 onDeleteCustomEq = { viewModel.deleteCustomEqProfile(it) },

@@ -30,11 +30,10 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Equalizer
 import androidx.compose.material.icons.outlined.GraphicEq
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.Stop
@@ -63,10 +62,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -75,7 +75,11 @@ import com.example.audio.AcousticTestType
 import com.example.model.AncMode
 import com.example.model.AudioEngineCapabilities
 import com.example.model.DiscoveredAudioDevice
+import com.example.model.DspConfig
+import com.example.model.DspLiveTelemetry
+import com.example.model.EqBandMode
 import com.example.model.EqualizerProfile
+import com.example.model.ParametricEqNode
 import com.example.model.SmartSettings
 import com.example.model.SoundMode
 import com.example.model.SubwooferConfig
@@ -84,7 +88,6 @@ import com.example.model.TouchControlConfig
 import com.example.ui.components.LuxActionButton
 import com.example.ui.components.LuxGlassCard
 import com.example.ui.components.MusicReactiveBassVisualizer
-import com.example.ui.components.RedSignalDot
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusBadgePill
 import com.example.ui.theme.LocalLuxThemeExtras
@@ -93,6 +96,10 @@ import kotlin.math.roundToInt
 @Composable
 fun SoundScreen(
     activeDevice: DiscoveredAudioDevice?,
+    dspConfig: DspConfig,
+    dspTelemetry: DspLiveTelemetry,
+    eqCurveDb: List<Float>,
+    spectrumBands: List<Float>,
     subwoofer: SubwooferConfig,
     eqProfiles: List<EqualizerProfile>,
     activeEqProfile: EqualizerProfile,
@@ -106,10 +113,14 @@ fun SoundScreen(
     micPermissionGranted: Boolean,
     initialTab: Int = 0,
     onRequestMicPermission: () -> Unit,
+    onUpdateDspConfig: ((DspConfig) -> DspConfig) -> Unit,
+    onResetAllDsp: () -> Unit,
     onUpdateSubwoofer: ((SubwooferConfig) -> SubwooferConfig) -> Unit,
     onResetSubwoofer: () -> Unit,
     onSelectEqPreset: (EqualizerProfile) -> Unit,
+    onUpdateEqBand15: (Int, Float) -> Unit,
     onUpdateEqBand: (Int, Float) -> Unit,
+    onUpdateParametricNode: (Int, (ParametricEqNode) -> ParametricEqNode) -> Unit,
     onSaveCustomEq: (String) -> Unit,
     onRenameCustomEq: (String, String) -> Unit,
     onDeleteCustomEq: (String) -> Unit,
@@ -124,8 +135,9 @@ fun SoundScreen(
     onShowToast: (String) -> Unit,
 ) {
     val extras = LocalLuxThemeExtras.current
+    val haptic = LocalHapticFeedback.current
     var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 3)) }
-    val tabs = listOf("Equalizer", "Subwoofer X", "ANC Studio", "Gaming & Test")
+    val tabs = listOf("Equalizer", "Deep Bass", "Filters & Mix", "Hardware & Test")
 
     var showSaveDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -142,25 +154,29 @@ fun SoundScreen(
         item {
             SectionHeader(
                 title = "Sound Studio",
-                subtitle = capabilities.engineStatusMessage,
+                subtitle = "REAL SOFTWARE PCM & ANDROID AUDIOEFFECT DSP",
                 trailing = {
                     StatusBadgePill(
-                        label = if (capabilities.equalizerSupported) "${capabilities.hardwareBandCount}-BAND DSP" else "SAFE DSP",
-                        isRedActive = capabilities.equalizerSupported,
+                        label = "${dspConfig.eqBandMode.bandCount}-BAND",
+                        isRedActive = true,
                     )
                 },
             )
-            Spacer(Modifier.height(12.dp))
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            Spacer(Modifier.height(10.dp))
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().testTag("sound_tabs_row")) {
                 tabs.forEachIndexed { idx, label ->
                     SegmentedButton(
                         selected = selectedTab == idx,
-                        onClick = { selectedTab = idx },
+                        onClick = {
+                            if (extras.hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            selectedTab = idx
+                        },
                         shape = SegmentedButtonDefaults.itemShape(index = idx, count = tabs.size),
                         colors = SegmentedButtonDefaults.colors(
                             activeContainerColor = extras.signalRed.copy(alpha = 0.16f),
                             activeContentColor = extras.signalRed,
                         ),
+                        modifier = Modifier.testTag("sound_tab_$idx"),
                     ) {
                         Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     }
@@ -168,57 +184,90 @@ fun SoundScreen(
             }
         }
 
+        // Verified Real-Time Engine Status Banner (Always accurate: never fakes active processing)
+        item {
+            SoundEngineStatusCard(
+                capabilities = capabilities,
+                telemetry = dspTelemetry,
+                soundTestRunning = soundTestRunning,
+                onToggleAuditionLoop = {
+                    if (soundTestRunning == AcousticTestType.LIVE_DSP_AUDITION.label) {
+                        onStopSoundTest()
+                    } else {
+                        onRunSoundTest(AcousticTestType.LIVE_DSP_AUDITION)
+                    }
+                },
+                onResetAllDsp = onResetAllDsp,
+            )
+        }
+
         when (selectedTab) {
             0 -> {
-                // SOUND STUDIO: 10-BAND EQUALIZER + SPATIAL / SURROUND + VISUALIZER
+                // TAB 0: 15-BAND / 10-BAND EQUALIZER + ANIMATED CURVE + PRESETS + PARAMETRIC EQ + HEADPHONE PROFILE
                 item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(
-                            title = "Music Reactive Telemetry",
-                            subtitle = if (micPermissionGranted) "LIVE FFT ANALYZER ACTIVE" else "PLAYBACK REACTIVE PULSE",
-                            trailing = { RedSignalDot(active = subwoofer.enabled, size = 8.dp) },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        MusicReactiveBassVisualizer(
-                            energy = bassEnergy,
-                            bassIntensity = subwoofer.bassIntensity,
-                            enabled = true,
-                            useRedFrequencyBars = true,
-                        )
-                        if (!micPermissionGranted) {
-                            Spacer(Modifier.height(8.dp))
-                            LuxActionButton(
-                                text = "Enable Live FFT Mic Visualizer",
-                                icon = Icons.Outlined.Mic,
-                                filled = false,
-                                onClick = onRequestMicPermission,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                    }
+                    AnimatedEqResponseGraphCard(
+                        eqCurveDb = eqCurveDb,
+                        spectrumBands = spectrumBands,
+                        dspConfig = dspConfig,
+                        telemetry = dspTelemetry,
+                        micPermissionGranted = micPermissionGranted,
+                        onRequestMicPermission = onRequestMicPermission,
+                    )
                 }
 
                 item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(
-                            title = "10-Band Equalizer",
-                            subtitle = "PROFILE: ${activeEqProfile.name.uppercase()}",
-                            trailing = { Icon(Icons.Outlined.Equalizer, contentDescription = null, tint = extras.signalRed) },
-                        )
+                    LuxGlassCard(modifier = Modifier.fillMaxWidth().testTag("eq_presets_card")) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${dspConfig.eqBandMode.label.uppercase()} EQUALIZER",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                )
+                                Text(
+                                    text = "PRESET: ${activeEqProfile.name.uppercase()}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = extras.signalRed,
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                EqBandMode.entries.forEach { mode ->
+                                    FilterChip(
+                                        selected = dspConfig.eqBandMode == mode,
+                                        onClick = { onUpdateDspConfig { it.copy(eqBandMode = mode) } },
+                                        label = { Text(mode.label.uppercase(), style = MaterialTheme.typography.labelSmall) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = extras.signalRed.copy(alpha = 0.16f),
+                                            selectedLabelColor = extras.signalRed,
+                                        ),
+                                        modifier = Modifier.testTag("eq_mode_${mode.name}"),
+                                    )
+                                }
+                            }
+                        }
+
                         Spacer(Modifier.height(10.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(eqProfiles, key = { it.id }) { prof ->
                                 FilterChip(
                                     selected = prof.id == activeEqProfile.id,
-                                    onClick = { onSelectEqPreset(prof) },
+                                    onClick = {
+                                        if (extras.hapticEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onSelectEqPreset(prof)
+                                    },
                                     label = { Text(prof.name.uppercase(), style = MaterialTheme.typography.labelSmall) },
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = extras.signalRed.copy(alpha = 0.16f),
                                         selectedLabelColor = extras.signalRed,
                                     ),
+                                    modifier = Modifier.testTag("eq_preset_${prof.id}"),
                                 )
                             }
                         }
+
                         Spacer(Modifier.height(12.dp))
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             LuxActionButton(
@@ -261,50 +310,216 @@ fun SoundScreen(
                     }
                 }
 
+                // 15-Band or 10-Band Frequency Sliders (-12dB to +12dB)
                 item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
+                    val bandsToShow = if (dspConfig.eqBandMode == EqBandMode.BANDS_15) {
+                        DspConfig.BANDS_15_SPECS
+                    } else {
+                        DspConfig.BANDS_15_SPECS.filter { it.mapped10BandIndex != null }
+                    }
+                    val cur15 = activeEqProfile.resolved15Bands()
+
+                    LuxGlassCard(modifier = Modifier.fillMaxWidth().testTag("eq_sliders_card")) {
                         SectionHeader(
-                            title = "Frequency Sliders (31Hz – 16kHz)",
-                            subtitle = "MAPPED TO ${capabilities.hardwareBandCount.coerceAtLeast(5)} ANDROID DSP BANDS",
+                            title = if (dspConfig.eqBandMode == EqBandMode.BANDS_15) {
+                                "15-Band Precision EQ (20Hz – 16kHz)"
+                            } else {
+                                "10-Band EQ (31Hz – 16kHz)"
+                            },
+                            subtitle = "-12 dB TO +12 dB · DIRECT BIQUAD FILTER CONTROL",
+                            trailing = {
+                                TextButton(
+                                    onClick = {
+                                        val flat = eqProfiles.firstOrNull { it.id == "preset_balanced" }
+                                        if (flat != null) onSelectEqPreset(flat) else onResetAllDsp()
+                                    },
+                                    modifier = Modifier.testTag("eq_flat_reset_btn"),
+                                ) {
+                                    Text("FLAT 0dB", color = extras.signalRed)
+                                }
+                            },
                         )
-                        Spacer(Modifier.height(10.dp))
-                        EqualizerProfile.BAND_LABELS.forEachIndexed { idx, freqLabel ->
-                            val db = activeEqProfile.bandsDb.getOrElse(idx) { 0f }
+                        Spacer(Modifier.height(8.dp))
+                        bandsToShow.forEach { spec ->
+                            val db = cur15.getOrElse(spec.index) { 0f }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(freqLabel, style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(54.dp))
+                                Column(modifier = Modifier.width(86.dp)) {
+                                    Text(
+                                        text = spec.shortLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (db != 0f) extras.signalRed else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = spec.roleLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                                 Slider(
                                     value = db,
-                                    onValueChange = { newVal -> onUpdateEqBand(idx, newVal) },
+                                    onValueChange = { newVal ->
+                                        onUpdateEqBand15(spec.index, newVal)
+                                    },
                                     valueRange = -12f..12f,
                                     colors = SliderDefaults.colors(
                                         thumbColor = extras.signalRed,
                                         activeTrackColor = extras.signalRed,
                                     ),
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.weight(1f).testTag("eq_slider_${spec.shortLabel}"),
                                 )
                                 Text(
-                                    text = "%+.1f".format(db),
+                                    text = "%+.1f dB".format(db),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (db != 0f) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.width(46.dp),
+                                    modifier = Modifier.width(56.dp),
                                 )
                             }
                         }
                     }
                 }
 
-                // Sound Modes + Spatial / Surround Sound
+                // Parametric EQ + Headphone Profile + Auto Switching
+                item {
+                    ParametricAndHeadphoneDspCard(
+                        dspConfig = dspConfig,
+                        onUpdateParametricNode = onUpdateParametricNode,
+                        onUpdateDspConfig = onUpdateDspConfig,
+                    )
+                }
+            }
+
+            1 -> {
+                // TAB 1: REAL DEEP BASS CONTROL (5 OPTIONS + ANTI-CLIPPING + CROSSOVER + SUB SHAPING)
+                item {
+                    LuxGlassCard(
+                        modifier = Modifier.fillMaxWidth().testTag("deep_bass_hero_card"),
+                        highlightRedBorder = dspConfig.bassEngineEnabled,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "DEEP BASS & SUBWOOFER DSP",
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                )
+                                Text(
+                                    text = if (dspConfig.bassEngineEnabled) {
+                                        "BIQUAD SUB-SHELF + PUNCH PEAK + HARMONIC TEXTURE"
+                                    } else {
+                                        "BASS ENHANCEMENT BYPASSED"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (dspConfig.bassEngineEnabled) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = dspConfig.bassEngineEnabled,
+                                onCheckedChange = { en ->
+                                    onUpdateDspConfig { it.copy(bassEngineEnabled = en) }
+                                    onUpdateSubwoofer { it.copy(enabled = en) }
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = extras.signalRed),
+                                modifier = Modifier.testTag("subwoofer_master_switch"),
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        MusicReactiveBassVisualizer(
+                            energy = bassEnergy,
+                            bassIntensity = dspConfig.deepBassPercent,
+                            enabled = dspConfig.bassEngineEnabled,
+                            useRedFrequencyBars = true,
+                        )
+                    }
+                }
+
+                item {
+                    LuxGlassCard(modifier = Modifier.fillMaxWidth().testTag("deep_bass_sliders_card")) {
+                        SectionHeader(
+                            title = "Deep Bass Processing (0–100%)",
+                            subtitle = "HEADROOM GUARD & ANTI-CLIPPING ACTIVE",
+                            trailing = {
+                                TextButton(onClick = onResetSubwoofer) {
+                                    Icon(Icons.Outlined.RestartAlt, contentDescription = "Reset Deep Bass", tint = extras.signalRed, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("RESET", color = extras.signalRed)
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(10.dp))
+
+                        BassPercentSlider("Deep Bass (45–80Hz Shelf)", dspConfig.deepBassPercent, dspConfig.bassEngineEnabled, "slider_deep_bass") { v ->
+                            onUpdateDspConfig { it.copy(deepBassPercent = v) }
+                            onUpdateSubwoofer { it.copy(deepBass = v, bassIntensity = v, presetName = "Custom") }
+                        }
+                        BassPercentSlider("Sub Bass (20–55Hz Rumble)", dspConfig.subBassPercent, dspConfig.bassEngineEnabled, "slider_sub_bass") { v ->
+                            onUpdateDspConfig { it.copy(subBassPercent = v) }
+                            onUpdateSubwoofer { it.copy(subwooferSimulation = v, presetName = "Custom") }
+                        }
+                        BassPercentSlider("Bass Punch (80–130Hz Kick)", dspConfig.bassPunchPercent, dspConfig.bassEngineEnabled, "slider_bass_punch") { v ->
+                            onUpdateDspConfig { it.copy(bassPunchPercent = v) }
+                            onUpdateSubwoofer { it.copy(punchBass = v, presetName = "Custom") }
+                        }
+                        BassPercentSlider("Bass Warmth (150–250Hz Body)", dspConfig.bassWarmthPercent, dspConfig.bassEngineEnabled, "slider_bass_warmth") { v ->
+                            onUpdateDspConfig { it.copy(bassWarmthPercent = v) }
+                        }
+                        BassPercentSlider("Bass Texture (Soft-Knee Harmonics)", dspConfig.bassTexturePercent, dspConfig.bassEngineEnabled, "slider_bass_texture") { v ->
+                            onUpdateDspConfig { it.copy(bassTexturePercent = v) }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("LOW-FREQ CROSSOVER TARGET", style = MaterialTheme.typography.labelMedium)
+                            Text("${dspConfig.subCrossoverHz.roundToInt()} Hz", style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
+                        }
+                        Slider(
+                            value = dspConfig.subCrossoverHz,
+                            onValueChange = { hz ->
+                                onUpdateDspConfig { it.copy(subCrossoverHz = hz) }
+                                onUpdateSubwoofer { it.copy(lowFreqCutoffHz = hz.roundToInt(), presetName = "Custom") }
+                            },
+                            valueRange = 20f..200f,
+                            enabled = dspConfig.bassEngineEnabled,
+                            colors = SliderDefaults.colors(thumbColor = extras.signalRed, activeTrackColor = extras.signalRed),
+                        )
+
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.Shield, contentDescription = null, tint = extras.signalRed, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = "Clip-safe DSP automatically compensates ${"%.1f".format(dspTelemetry.headroomReductionDb)} dB headroom to prevent bass distortion & volume spikes.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+            2 -> {
+                // TAB 2: FILTERS (HPF/LPF 20-20000Hz 6/12/24 dB/oct), STEREO BALANCE & WIDTH, PREAMP, GAIN, LIMITER, NORMALIZATION, SOUND MODES
+                item {
+                    FiltersAndStereoMixSection(
+                        dspConfig = dspConfig,
+                        telemetry = dspTelemetry,
+                        onUpdateDspConfig = onUpdateDspConfig,
+                    )
+                }
+
                 item {
                     LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
                         SectionHeader(
                             title = "Sound Modes & Spatial Stage",
                             subtitle = if (capabilities.virtualizerSupported) {
-                                "ANDROID VIRTUALIZER 3D ENGINE READY"
+                                "MID/SIDE MATRIX + ANDROID VIRTUALIZER"
                             } else {
-                                "EQ STAGE SHAPING (VIRTUALIZER HAL UNSUPPORTED)"
+                                "SOFTWARE MID/SIDE SPATIAL + BIQUAD STAGE"
                             },
                         )
                         Spacer(Modifier.height(8.dp))
@@ -324,7 +539,7 @@ fun SoundScreen(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Text(mode.title.uppercase(), style = MaterialTheme.typography.titleSmall)
-                                            if (mode.isSpatial) StatusBadgePill(label = if (capabilities.virtualizerSupported) "3D SPATIAL" else "EQ STAGE", isRedActive = selected)
+                                            if (mode.isSpatial) StatusBadgePill(label = "3D SPATIAL", isRedActive = selected)
                                             if (mode.isLowLatency) StatusBadgePill(label = "LOW LATENCY", isRedActive = selected)
                                         }
                                         Text(mode.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -339,219 +554,52 @@ fun SoundScreen(
                 }
             }
 
-            1 -> {
-                // SUBWOOFER ENGINE X (PURE BLACK + SIGNAL RED FREQUENCY VISUALIZATION)
-                item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth(), highlightRedBorder = subwoofer.enabled) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "SUBWOOFER ENGINE X",
-                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                                )
-                                Text(
-                                    text = if (capabilities.bassBoostSupported) {
-                                        "ACTIVE: BASSBOOST + EQUALIZER + LOUDNESS"
-                                    } else {
-                                        "ACTIVE: EQUALIZER LOW-FREQ DSP"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (subwoofer.enabled) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = subwoofer.enabled,
-                                onCheckedChange = { checked -> onUpdateSubwoofer { it.copy(enabled = checked) } },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = extras.signalRed),
-                                modifier = Modifier.testTag("subwoofer_master_switch"),
-                            )
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-                        MusicReactiveBassVisualizer(
-                            energy = bassEnergy,
-                            bassIntensity = subwoofer.bassIntensity,
-                            enabled = subwoofer.enabled,
-                            useRedFrequencyBars = true,
-                        )
-                    }
-                }
-
-                item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(
-                            title = "Subwoofer Profiles",
-                            subtitle = "ACTIVE: ${subwoofer.presetName.uppercase()}",
-                            trailing = {
-                                TextButton(onClick = onResetSubwoofer) {
-                                    Icon(Icons.Outlined.RestartAlt, contentDescription = "Reset Subwoofer", tint = extras.signalRed, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("RESET", color = extras.signalRed)
-                                }
-                            },
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        val subPresets = listOf(
-                            SubwooferConfig(true, 55, 60, 50, 65, 80, 0f, "Titanium Sub", 4.5f, 5f, 4f, 3f, 2f, 1f, 0f),
-                            SubwooferConfig(true, 88, 92, 82, 90, 95, 0f, "808 Seismic", 9f, 9.5f, 8f, 6f, 4f, 2f, 0.5f),
-                            SubwooferConfig(true, 76, 70, 88, 65, 110, 0f, "Club Punch", 5.5f, 6.5f, 7.5f, 7f, 5.5f, 3f, 1.5f),
-                            SubwooferConfig(true, 35, 30, 35, 30, 63, 0f, "Studio Warm", 2f, 2.5f, 2f, 1.5f, 1f, 0.5f, 0f),
-                        )
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(subPresets) { p ->
-                                FilterChip(
-                                    selected = subwoofer.presetName == p.presetName,
-                                    onClick = { onUpdateSubwoofer { p } },
-                                    label = { Text(p.presetName.uppercase(), style = MaterialTheme.typography.labelSmall) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = extras.signalRed.copy(alpha = 0.16f),
-                                        selectedLabelColor = extras.signalRed,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(title = "Low-Frequency Dynamics", subtitle = "0–100 REAL ANDROID AUDIOEFFECT SCALING")
-                        Spacer(Modifier.height(10.dp))
-                        LabeledIntSlider("Bass Level", subwoofer.bassIntensity, 0..100, "%", subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(bassIntensity = v, presetName = "Custom") }
-                        }
-                        LabeledIntSlider("Deep Bass", subwoofer.deepBass, 0..100, "%", subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(deepBass = v, presetName = "Custom") }
-                        }
-                        LabeledIntSlider("Punch Bass", subwoofer.punchBass, 0..100, "%", subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(punchBass = v, presetName = "Custom") }
-                        }
-                        LabeledIntSlider("Subwoofer Simulation", subwoofer.subwooferSimulation, 0..100, "%", subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(subwooferSimulation = v, presetName = "Custom") }
-                        }
-                        LabeledIntSlider("Low-Frequency Cutoff", subwoofer.lowFreqCutoffHz, 20..200, " Hz", subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(lowFreqCutoffHz = v, presetName = "Custom") }
-                        }
-
-                        Spacer(Modifier.height(6.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("L/R BALANCE", style = MaterialTheme.typography.labelSmall)
-                            val balText = when {
-                                subwoofer.balance < -0.05f -> "L ${(-subwoofer.balance * 100).roundToInt()}%"
-                                subwoofer.balance > 0.05f -> "R ${(subwoofer.balance * 100).roundToInt()}%"
-                                else -> "CENTER"
-                            }
-                            Text(balText, style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
-                        }
-                        Slider(
-                            value = subwoofer.balance,
-                            onValueChange = { v -> onUpdateSubwoofer { it.copy(balance = v) } },
-                            valueRange = -1f..1f,
-                            colors = SliderDefaults.colors(thumbColor = extras.signalRed, activeTrackColor = extras.signalRed),
-                        )
-                    }
-                }
-
-                item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(title = "Sub-Bass Band Tuning", subtitle = "20Hz · 31Hz · 40Hz · 63Hz · 80Hz · 125Hz · 200Hz")
-                        Spacer(Modifier.height(8.dp))
-                        SubBandSlider("20Hz INFRASONIC", subwoofer.band20HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band20HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("31Hz SUB RUMBLE", subwoofer.band31HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band31HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("40Hz SUB CORE", subwoofer.band40HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band40HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("63Hz DEEP KICK", subwoofer.band63HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band63HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("80Hz CHEST PUNCH", subwoofer.band80HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band80HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("125Hz UPPER BASS", subwoofer.band125HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band125HzDb = v, presetName = "Custom") }
-                        }
-                        SubBandSlider("200Hz WARMTH", subwoofer.band200HzDb, subwoofer.enabled) { v ->
-                            onUpdateSubwoofer { it.copy(band200HzDb = v, presetName = "Custom") }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.Top) {
-                            Icon(Icons.Outlined.Info, contentDescription = null, tint = extras.signalRed, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = capabilities.limitationNotice,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-
-            2 -> {
-                // ANC STUDIO
-                item {
-                    val hwAncSupported = activeDevice?.compatibilityReport?.supportsHardwareAncControl == true
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth(), highlightRedBorder = hwAncSupported) {
-                        SectionHeader(
-                            title = "ANC Studio",
-                            subtitle = if (hwAncSupported) "HARDWARE ANC PROTOCOL LINKED" else "HARDWARE PROTOCOL GATE ACTIVE",
-                            trailing = {
-                                Icon(
-                                    imageVector = if (hwAncSupported) Icons.Outlined.GraphicEq else Icons.Outlined.Lock,
-                                    contentDescription = null,
-                                    tint = if (hwAncSupported) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = if (activeDevice == null) {
-                                "No Bluetooth earbuds connected. Select a staged preference below; hardware support will be verified upon connection."
-                            } else {
-                                "${activeDevice.displayTitle} (${activeDevice.brand.displayName}) does not expose public Android ANC GATT/RFCOMM APIs. Unsupported controls are clearly labeled and never faked."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        AncMode.entries.forEach { mode ->
-                            val selected = preferredAncMode == mode
-                            LuxGlassCard(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                                contentPadding = PaddingValues(12.dp),
-                                highlightRedBorder = selected,
-                                onClick = { onSelectAncMode(mode) },
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(mode.title.uppercase(), style = MaterialTheme.typography.titleSmall)
-                                        Text(mode.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    StatusBadgePill(
-                                        label = if (hwAncSupported && selected) "ACTIVE" else if (selected) "STAGED" else "OEM REQ",
-                                        isRedActive = selected,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             3 -> {
-                // GAMING MODE + TOUCH CONTROLS + ACOUSTIC TEST
+                // TAB 3: ACOUSTIC TESTS + GAMING LOW-LATENCY + HARDWARE ANC PROTOCOL + TOUCH MAP
+                item {
+                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
+                        SectionHeader(
+                            title = "Real-Time DSP Acoustic Tests",
+                            subtitle = soundTestRunning?.let { "STREAMING THROUGH DSP: $it" } ?: "LIVE PCM AUDIO ROUTED THROUGH ALL ACTIVE FILTERS",
+                            trailing = { Icon(Icons.Outlined.Speaker, contentDescription = null, tint = extras.signalRed) },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        listOf(
+                            AcousticTestType.LIVE_DSP_AUDITION,
+                            AcousticTestType.LEFT_CHANNEL,
+                            AcousticTestType.RIGHT_CHANNEL,
+                            AcousticTestType.STEREO_CHIME,
+                            AcousticTestType.SUBWOOFER_SWEEP,
+                        ).forEach { test ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(test.label.uppercase(), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                                LuxActionButton(
+                                    text = if (soundTestRunning == test.label) "Playing" else "Play",
+                                    icon = Icons.Outlined.PlayArrow,
+                                    filled = false,
+                                    useRedAccent = soundTestRunning == test.label,
+                                    enabled = soundTestRunning == null,
+                                    onClick = { onRunSoundTest(test) },
+                                )
+                            }
+                        }
+                        if (soundTestRunning != null) {
+                            Spacer(Modifier.height(8.dp))
+                            LuxActionButton(
+                                text = "Stop Sound Test",
+                                icon = Icons.Outlined.Stop,
+                                useRedAccent = true,
+                                onClick = onStopSoundTest,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+
                 item {
                     val gamingActive = smartSettings.gamingLowLatencyHint || activeSoundMode == SoundMode.GAMING
                     val pulseAnim = if (gamingActive && extras.animationSpeed.factor > 0f) {
@@ -593,7 +641,7 @@ fun SoundScreen(
                                 Column {
                                     Text("GAMING MODE", style = MaterialTheme.typography.titleLarge)
                                     Text(
-                                        text = if (gamingActive) "LOW-LATENCY AUDIO PROFILE ACTIVE" else "STANDARD AUDIO BUFFERING",
+                                        text = if (gamingActive) "LOW-LATENCY DSP (~${dspTelemetry.latencyEstimateMs.roundToInt()}ms)" else "STANDARD AUDIO BUFFERING",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (gamingActive) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -606,18 +654,61 @@ fun SoundScreen(
                                 modifier = Modifier.testTag("gaming_mode_switch"),
                             )
                         }
-
-                        Spacer(Modifier.height(12.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            StatusBadgePill(label = "${capabilities.outputSampleRateHz} Hz", isRedActive = gamingActive)
-                            StatusBadgePill(label = "SESSION ${capabilities.activeAudioSessionId}", isRedActive = false)
-                        }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "Output Route: ${capabilities.outputRouteLabel}. Gaming Mode activates low-latency EQ transient boost (2–6kHz footstep clarity) and requests minimal AudioManager routing latency. Bluetooth codec-level LL mode depends on earbuds & OS Bluetooth stack.",
+                            text = "Output Route: ${capabilities.outputRouteLabel} (${capabilities.outputSampleRateHz} Hz). Gaming Mode engages 2–6kHz transient clarity biquads.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+
+                // Hardware ANC Control (Honest non-faked hardware gate)
+                item {
+                    val hwAncSupported = activeDevice?.compatibilityReport?.supportsHardwareAncControl == true
+                    LuxGlassCard(modifier = Modifier.fillMaxWidth(), highlightRedBorder = hwAncSupported) {
+                        SectionHeader(
+                            title = "Earbud Hardware ANC",
+                            subtitle = if (hwAncSupported) "HARDWARE ANC ACTIVE" else "REQUIRES EARBUD MICROPHONE HARDWARE",
+                            trailing = {
+                                Icon(
+                                    imageVector = if (hwAncSupported) Icons.Outlined.GraphicEq else Icons.Outlined.Lock,
+                                    contentDescription = null,
+                                    tint = if (hwAncSupported) extras.signalRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Active Noise Cancellation & Transparency run inside earbud microphone hardware chips and are never faked in software when Bluetooth GATT ANC APIs are absent.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        AncMode.entries.take(6).forEach { mode ->
+                            val selected = preferredAncMode == mode
+                            LuxGlassCard(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                contentPadding = PaddingValues(12.dp),
+                                highlightRedBorder = selected,
+                                onClick = { onSelectAncMode(mode) },
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(mode.title.uppercase(), style = MaterialTheme.typography.titleSmall)
+                                        Text(mode.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    StatusBadgePill(
+                                        label = if (hwAncSupported && selected) "ACTIVE" else if (selected) "SAVED" else "HW ONLY",
+                                        isRedActive = selected,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -626,74 +717,27 @@ fun SoundScreen(
                     val touchSupported = activeDevice?.compatibilityReport?.supportsHardwareTouchRemap == true
                     LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
                         SectionHeader(
-                            title = "Touch Controls",
-                            subtitle = if (touchSupported) "SYNCED WITH HARDWARE" else "LOCAL PREFERENCE · OEM PROTOCOL REQUIRED",
+                            title = "Touch Preferences",
+                            subtitle = if (touchSupported) "SYNCED WITH EARBUDS" else "SAVED LOCALLY PER PROFILE",
                             trailing = { Icon(Icons.Outlined.TouchApp, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface) },
                         )
                         Spacer(Modifier.height(8.dp))
                         Text("LEFT EARBUD", style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
-                        Spacer(Modifier.height(4.dp))
                         TouchRow("Single Tap", touchConfig.leftSingle) { next -> onUpdateTouchConfig { it.copy(leftSingle = next) } }
                         TouchRow("Double Tap", touchConfig.leftDouble) { next -> onUpdateTouchConfig { it.copy(leftDouble = next) } }
-                        TouchRow("Triple Tap", touchConfig.leftTriple) { next -> onUpdateTouchConfig { it.copy(leftTriple = next) } }
                         TouchRow("Long Press", touchConfig.leftLong) { next -> onUpdateTouchConfig { it.copy(leftLong = next) } }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text("RIGHT EARBUD", style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
-                        Spacer(Modifier.height(4.dp))
                         TouchRow("Single Tap", touchConfig.rightSingle) { next -> onUpdateTouchConfig { it.copy(rightSingle = next) } }
                         TouchRow("Double Tap", touchConfig.rightDouble) { next -> onUpdateTouchConfig { it.copy(rightDouble = next) } }
-                        TouchRow("Triple Tap", touchConfig.rightTriple) { next -> onUpdateTouchConfig { it.copy(rightTriple = next) } }
                         TouchRow("Long Press", touchConfig.rightLong) { next -> onUpdateTouchConfig { it.copy(rightLong = next) } }
-                    }
-                }
-
-                // Acoustic Sound Test
-                item {
-                    LuxGlassCard(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(
-                            title = "Acoustic Sound Test",
-                            subtitle = soundTestRunning?.let { "PLAYING: $it" } ?: "REAL PCM STEREO & SUB-BASS TONES",
-                            trailing = { Icon(Icons.Outlined.Speaker, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface) },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        listOf(
-                            AcousticTestType.LEFT_CHANNEL,
-                            AcousticTestType.RIGHT_CHANNEL,
-                            AcousticTestType.STEREO_CHIME,
-                            AcousticTestType.SUBWOOFER_SWEEP,
-                        ).forEach { test ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(test.label.uppercase(), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                                LuxActionButton(
-                                    text = if (soundTestRunning == test.label) "Playing" else "Play",
-                                    icon = Icons.Outlined.PlayArrow,
-                                    filled = false,
-                                    useRedAccent = soundTestRunning == test.label,
-                                    enabled = soundTestRunning == null,
-                                    onClick = { onRunSoundTest(test) },
-                                )
-                            }
-                        }
-                        if (soundTestRunning != null) {
-                            Spacer(Modifier.height(8.dp))
-                            LuxActionButton(
-                                text = "Stop Sound Test",
-                                icon = Icons.Outlined.Stop,
-                                useRedAccent = true,
-                                onClick = onStopSoundTest,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
                     }
                 }
             }
         }
     }
 
+    // Dialogs (Save, Rename, Export, Import)
     if (showSaveDialog) {
         var nameInput by remember { mutableStateOf("") }
         AlertDialog(
@@ -749,7 +793,7 @@ fun SoundScreen(
             confirmButton = {
                 TextButton(onClick = {
                     clipboard.setText(AnnotatedString(json))
-                    onShowToast("EQ profile JSON copied to clipboard")
+                    onShowToast("15-Band EQ profile JSON copied to clipboard")
                     showExportDialog = null
                 }) { Text("COPY JSON") }
             },
@@ -782,56 +826,26 @@ fun SoundScreen(
 }
 
 @Composable
-private fun LabeledIntSlider(
+private fun BassPercentSlider(
     title: String,
     value: Int,
-    range: IntRange,
-    unit: String,
     enabled: Boolean,
+    tag: String,
     onValueChange: (Int) -> Unit,
 ) {
     val extras = LocalLuxThemeExtras.current
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(title.uppercase(), style = MaterialTheme.typography.labelMedium)
-            Text("$value$unit", style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
+            Text("$value%", style = MaterialTheme.typography.labelMedium, color = extras.signalRed)
         }
         Slider(
             value = value.toFloat(),
             onValueChange = { onValueChange(it.roundToInt()) },
-            valueRange = range.first.toFloat()..range.last.toFloat(),
+            valueRange = 0f..100f,
             enabled = enabled,
             colors = SliderDefaults.colors(thumbColor = extras.signalRed, activeTrackColor = extras.signalRed),
-        )
-    }
-}
-
-@Composable
-private fun SubBandSlider(
-    label: String,
-    db: Float,
-    enabled: Boolean,
-    onChange: (Float) -> Unit,
-) {
-    val extras = LocalLuxThemeExtras.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(122.dp))
-        Slider(
-            value = db,
-            onValueChange = onChange,
-            valueRange = -6f..12f,
-            enabled = enabled,
-            colors = SliderDefaults.colors(thumbColor = extras.signalRed, activeTrackColor = extras.signalRed),
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = "%+.1fdB".format(db),
-            style = MaterialTheme.typography.labelSmall,
-            color = extras.signalRed,
-            modifier = Modifier.width(56.dp),
+            modifier = Modifier.testTag(tag),
         )
     }
 }
